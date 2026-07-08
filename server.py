@@ -772,6 +772,50 @@ class Gateway:
         # Monotonic timestamps of recent unexpected exits (crash-loop guard).
         self._recent_exits: list[float] = []
 
+    async def _refresh_composio_mcp(self, env: dict) -> None:
+        """Mint a fresh Composio Tool Router session and write it into
+        config.yaml's mcp_servers block.
+
+        Composio Tool Router session URLs are ephemeral by design, so this
+        runs on every gateway start rather than once at provision time.
+        Silent no-op when Composio isn't configured for this bot (it's
+        optional per client — see Bot_Builder_Build_Standard doc). Any
+        failure (network, bad key, non-2xx) is logged as a single line and
+        swallowed: Composio must never block the gateway from starting.
+        """
+        api_key = env.get("COMPOSIO_API_KEY", "")
+        user_id = env.get("COMPOSIO_USER_ID", "")
+        if not api_key or not user_id:
+            return
+        try:
+            import yaml  # deferred import, mirrors write_config_yaml()
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    "https://backend.composio.dev/api/v3.1/tool_router/session",
+                    headers={"x-api-key": api_key},
+                    json={"user_id": user_id},
+                )
+                resp.raise_for_status()
+                mcp_url = resp.json()["mcp"]["url"]
+
+            config_path = Path(HERMES_HOME) / "config.yaml"
+            config: dict = {}
+            if config_path.exists():
+                with config_path.open() as f:
+                    loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    config = loaded
+            config.setdefault("mcp_servers", {})["composio"] = {
+                "url": mcp_url,
+                "headers": {"x-api-key": "${COMPOSIO_API_KEY}"},
+            }
+            with config_path.open("w") as f:
+                yaml.safe_dump(config, f, sort_keys=False)
+            print("[gateway] Composio Tool Router session refreshed", flush=True)
+        except Exception as exc:
+            print(f"[gateway] Composio refresh skipped (non-fatal): {exc}", flush=True)
+
     async def start(self, *, reset_budget: bool = True):
         if self.proc and self.proc.returncode is None:
             return
@@ -793,6 +837,7 @@ class Gateway:
             print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
             # Write config.yaml so hermes picks up the model (env vars alone aren't always enough)
             write_config_yaml(read_env(ENV_FILE))
+            await self._refresh_composio_mcp(env)
             self.proc = await asyncio.create_subprocess_exec(
                 "hermes", "gateway",
                 stdout=asyncio.subprocess.PIPE,
