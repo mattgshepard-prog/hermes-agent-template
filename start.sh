@@ -62,7 +62,7 @@ TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USER
 SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED EMAIL_ADDRESS EMAIL_PASSWORD \
 EMAIL_IMAP_HOST EMAIL_SMTP_HOST MATTERMOST_URL MATTERMOST_TOKEN MATRIX_HOMESERVER \
 MATRIX_ACCESS_TOKEN MATRIX_USER_ID GATEWAY_ALLOW_ALL_USERS ADMIN_USERNAME \
-ADMIN_PASSWORD COMPOSIO_API_KEY COMPOSIO_USER_ID"
+ADMIN_PASSWORD COMPOSIO_API_KEY COMPOSIO_USER_ID NOTION_TOKEN"
 
 seeded_count=0
 for key in $HERMES_ENV_KEYS; do
@@ -94,5 +94,23 @@ fi
 # No hermes process can be running at this point (we're pre-exec in a fresh
 # container), so removing the file unconditionally is safe.
 rm -f /data/.hermes/gateway.pid
+
+# ── Pre-warm the Notion MCP server package (A2: awkoy/notion-mcp-server) ────
+# Garry reaches Notion via a stdio MCP server that hermes spawns on demand with
+# `npx -y notion-mcp-server`. On a cold container, npx would fetch the package
+# (hundreds of transitive deps) on the FIRST Notion call — which already timed
+# out at >60s during setup. Pre-warming the npm cache at boot turns that first
+# call into an instant spawn from cache instead of a live download.
+#
+# Backgrounded and fully failure-tolerant: the subshell disables `set -e` (via
+# running in its own `bash -c`) and always exits 0, so a slow mirror or a
+# transient npm error can NEVER block or fail gateway boot. Mirrors the
+# "Composio never blocks boot" discipline already used for the Tool Router hook.
+# Idempotent: npx/npm cache is on the persistent /data-independent image layer
+# per-boot, so this is cheap on warm boots and only does real work when cold.
+(
+  bash -c 'npx -y notion-mcp-server --help >/tmp/notion_mcp_prewarm.log 2>&1 || true' &
+) 2>/dev/null || true
+echo "[start.sh] Notion MCP pre-warm started in background (non-blocking)."
 
 exec python /app/server.py
