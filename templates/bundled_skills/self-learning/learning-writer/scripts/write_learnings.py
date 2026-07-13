@@ -1,34 +1,39 @@
 #!/usr/bin/env python3
 """
-write_learnings.py — writer for the learning-writer skill.
+write_learnings.py -- writer for the learning-writer skill.
 
-Creates rows in the Notion Learning Log from a JSON array supplied on stdin.
-Only handles the deterministic Notion write. Extraction, scoring, and routing
-are the agent's judgment, per the skill.
+Reconciled to the LIVE Learning Log schema (verified 2026-07-13):
+  Lesson       (title)   required
+  Score        (number)  required, 0-100
+  Bucket       (select)  "behavioral" | "tool-specific" | "unsorted"
+  Target Skill (relation -> Skill Registry) required for tool-specific rows
+  Rationale    (text)    why it scored what it scored
+  Source       (text)    session id
+  Status       (select)  always "pending" on write
 
-Operator-facts must NOT be sent here; they go to Honcho. This script only
-writes Skill Change / Voice / Positioning / Rosetta Stone / Process / Other rows.
+Creates rows in the Learning Log from a JSON array on stdin. Only the
+deterministic Notion write lives here; extraction, scoring, and bucket routing
+are the agent's judgment per the skill.
 
-Env vars required:
-  NOTION_API_KEY          integration token
-  NOTION_LEARNING_LOG_DB  database_id of the Learning Log (for page creation)
+behavioral lessons routed to Honcho do NOT come here. This writes only rows that
+belong in the Learning Log (tool-specific edits, or unsorted needing triage).
 
-Stdin: a JSON array of objects, each:
+Env vars:
+  NOTION_TOKEN (or NOTION_API_KEY)   integration token
+  NOTION_LEARNING_LOG_DB             database_id of the Learning Log
+
+Stdin: JSON array of objects, each:
   {
-    "learning":   "one sentence",         # required
-    "score":      82,                      # required, 0-100
-    "type":       "Skill Change",          # required
-    "target":     "garry-email-followup",  # optional (required for Skill Change)
-    "body":       "self-contained instruction",  # required
-    "source":     "Cowork",                # "Cowork" | "Hermes"
-    "session_id": "cowork-2026-07-12"      # optional
+    "lesson":            "one-line actionable rule",   # required
+    "score":             82,                            # required 0-100
+    "bucket":            "tool-specific",               # required
+    "target_skill_id":   "<skill registry page id>",   # required if tool-specific
+    "rationale":         "why it scored this",          # optional
+    "source":            "cowork-2026-07-12"            # optional
   }
 
-Property names must match the Learning Log schema. Adjust the MAP below if the
-database uses different property names.
-
 Usage:
-  echo '[{...},{...}]' | write_learnings.py
+  echo '[{...}]' | write_learnings.py
 """
 
 import json
@@ -54,8 +59,6 @@ def _env(name):
 
 
 def _notion_key():
-    # This stack seeds the Notion token as NOTION_TOKEN. Accept NOTION_API_KEY
-    # as a fallback so the skill is portable to other bots.
     v = os.environ.get("NOTION_TOKEN", "").strip() or os.environ.get("NOTION_API_KEY", "").strip()
     if not v:
         _fail("Missing required env var: NOTION_TOKEN (or NOTION_API_KEY)")
@@ -81,37 +84,36 @@ def _request(method, url, body):
         raise RuntimeError(f"HTTP {e.code}: {detail[:400]}")
 
 
-def _rich(text):
-    return {"rich_text": [{"text": {"content": text[:2000]}}]} if text else {"rich_text": []}
+def _text(s):
+    return {"rich_text": [{"text": {"content": s[:2000]}}]} if s else {"rich_text": []}
 
 
 def build_props(row):
-    learning = row.get("learning", "").strip()
-    if not learning:
-        raise ValueError("row missing 'learning'")
+    lesson = (row.get("lesson") or "").strip()
+    if not lesson:
+        raise ValueError("row missing 'lesson'")
     score = row.get("score")
     if score is None:
         raise ValueError("row missing 'score'")
-    rtype = row.get("type", "").strip()
-    if not rtype:
-        raise ValueError("row missing 'type'")
-    body = row.get("body", "").strip()
-    if not body:
-        raise ValueError("row missing 'body'")
+    bucket = (row.get("bucket") or "").strip()
+    if bucket not in ("behavioral", "tool-specific", "unsorted"):
+        raise ValueError(f"invalid bucket '{bucket}'")
 
     props = {
-        "Learning": {"title": [{"text": {"content": learning[:2000]}}]},
+        "Lesson": {"title": [{"text": {"content": lesson[:2000]}}]},
         "Score": {"number": int(score)},
-        "Type": {"select": {"name": rtype}},
-        "Body": _rich(body),
-        "Status": {"select": {"name": "New"}},
+        "Bucket": {"select": {"name": bucket}},
+        "Status": {"select": {"name": "pending"}},
     }
-    if row.get("target"):
-        props["Target"] = _rich(row["target"].strip())
+    if row.get("rationale"):
+        props["Rationale"] = _text(row["rationale"].strip())
     if row.get("source"):
-        props["Source"] = {"select": {"name": row["source"].strip()}}
-    if row.get("session_id"):
-        props["Session ID"] = _rich(row["session_id"].strip())
+        props["Source"] = _text(row["source"].strip())
+    if bucket == "tool-specific":
+        tid = (row.get("target_skill_id") or "").strip()
+        if not tid:
+            raise ValueError("tool-specific row missing 'target_skill_id'")
+        props["Target Skill"] = {"relation": [{"id": tid}]}
     return props
 
 

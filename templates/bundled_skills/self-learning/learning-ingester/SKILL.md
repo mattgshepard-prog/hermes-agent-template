@@ -1,12 +1,12 @@
 ---
 name: learning-ingester
-description: "Garry's nightly self-learning ingester: read unprocessed rows from the Notion Learning Log, apply skill changes under a strict scoring fence, promote applied lessons into memory, mark each row's status, and email Matt a digest of what was applied, flagged, or discarded."
-version: 1.0.0
+description: "Garry's nightly self-learning ingester: read pending rows from the Notion Learning Log, apply tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), route behavioral lessons to Honcho, set each row's status, and email Matt a digest of what was ingested, flagged for approval, or rejected."
+version: 2.0.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
-  env_vars: [NOTION_API_KEY, NOTION_LEARNING_LOG_DS, NOTION_SKILL_REGISTRY_DS, NOTION_SKILL_REGISTRY_DB]
+  env_vars: [NOTION_TOKEN, NOTION_LEARNING_LOG_DS, NOTION_SKILL_REGISTRY_DS]
 triggers:
   - the Self-Learning Ingester cron job fires
   - user asks to ingest the learning log
@@ -19,108 +19,94 @@ metadata:
 
 # Learning Ingester
 
-Garry's standing nightly job: turn scored rows in the Notion Learning Log into real changes, safely. Read unprocessed rows, apply the ones that pass a strict fence, flag the ones that need Matt, discard the weak ones, then email Matt a digest of exactly what happened. Every applied change is reversible.
+Garry's standing nightly job: turn scored rows in the Notion Learning Log into real changes, safely. Read pending rows, apply the ones that pass the fence, flag the ones that need Matt, reject the weak ones, then email Matt a digest. Every applied change is reversible.
 
-This is the reader half of the self-learning loop. The writer half (`learning-writer`) produces the rows this skill consumes. This skill never writes new lessons; it only processes existing ones.
+This is the reader half of the loop. The writer half (`learning-writer`) produces the rows this skill consumes. This skill never writes new lessons; it only processes existing ones.
+
+## Live schema (verified against Garry Ops, do not assume otherwise)
+
+**Learning Log** rows have: `Lesson` (title, the actionable rule), `Score` (0-100), `Bucket` (`behavioral` | `tool-specific` | `unsorted`), `Target Skill` (relation to a Skill Registry page, set for tool-specific lessons), `Rationale` (text), `Source` (text), `Status` (`pending` | `ingested` | `rejected` | `needs-approval`), `Ingested` (date).
+
+**Skill Registry** pages have: `Skill Name` (title), `Version` (text), `Definition` (file, the SKILL.md), `Self Revision` (`auto` | `propose-only` | `locked`), `Blast Radius` (`low` | `medium` | `high`), `Surface`, `Revised By`, `Last Revised`, `Lessons` (relation), `Notes`.
 
 ## Files
 
-- Pre-pass script: `scripts/ingest_learning_log.py` (in this skill)
-- Notion access: HTTP + curl per the `notion` skill, or the script's own `requests` calls
-- Skill Registry lives in Notion; skill edits are made there (the canonical store), not to local skill files
-- Cron delivery: Matt's Telegram
-
-## Environment (read from .env, never hardcode)
-
-- `NOTION_API_KEY` — integration token, shared with the Learning Log and Skill Registry databases
-- `NOTION_LEARNING_LOG_DS` — data_source_id of the Learning Log (for querying rows)
-- `NOTION_SKILL_REGISTRY_DS` — data_source_id of the Skill Registry (for finding target skills)
-- `NOTION_SKILL_REGISTRY_DB` — database_id of the Skill Registry (for creating/patching skill pages)
-
-If any required variable is missing, exit with a single clear error to Telegram and do nothing else. Never guess an ID.
+- Pre-pass script: `scripts/ingest_learning_log.py` (queries pending rows; helpers for status, ingested-stamp, skill lookup)
+- Notion access: the script's own HTTP calls, or the `notion` skill
+- Cron delivery: Matt's Telegram; digest emailed to Matt
 
 ## How it runs
 
-1. The cron job (or the user) runs the pre-pass script:
-   `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py`
-2. The script queries the Learning Log for rows where `Status = New`, and prints JSON:
-   ```json
-   {
-     "rows": [
-       {"page_id":"...","learning":"...","score":82,"type":"Skill Change","target":"garry-email-followup","body":"...","source":"Cowork","session_id":"cowork-2026-07-12"}
-     ],
-     "count": 0,
-     "learning_log_ds": "...",
-     "skill_registry_ds": "...",
-     "skill_registry_db": "..."
-   }
-   ```
-3. Garry reads that output and processes each row through the fence below.
-4. Garry marks each row's `Status` to `Applied`, `Flagged`, or `Discarded` and, for applied rows, writes the changelog and a one-line memory breadcrumb.
-5. Garry emails Matt the digest (final step).
+1. Run the pre-pass: `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py`
+   It prints pending rows: `{page_id, lesson, score, bucket, target_skill_ids, rationale, source}`.
+2. Process each row through the fence below.
+3. For each row, set its `Status` and (when ingested) stamp `Ingested`.
+4. Email Matt the digest (final step).
 
-If `count` is 0, do NOT stay silent. Send the steady-state digest (see "The digest" below), then exit. A daily report that reliably arrives, even to say nothing changed, is the point.
+If `count` is 0, do NOT stay silent. Send the steady-state digest, then exit.
 
-## The fence (Carol Roderick's governance model, adopted verbatim)
+## The fence (two layers: Bucket/Score, then the target skill's Self Revision)
 
-Every row is already scored 0-100 by the writer. Route by score AND type. Type governs first, score governs second.
+Bucket governs the destination. Score and the target skill's `Self Revision` govern whether a tool-specific edit auto-applies.
 
-**Only `Skill Change` rows are ever auto-applied.** Every other type (Voice, Positioning, Rosetta Stone, Process, Other) takes the flag-and-approve path at any score, no exceptions.
+### behavioral lessons
+Route to Honcho as a conclusion (a specific, falsifiable observation about how Matt decides, prioritizes, or works). These never edit a skill. Set `Status = ingested` once written to Honcho. If Honcho is not configured in this environment, set `Status = needs-approval` and note in the digest that behavioral routing is pending Honcho setup, so the lesson is not silently lost.
 
-For `Skill Change` rows:
-- **Score 70 or above: Auto-apply.** Edit the target skill in the Notion Skill Registry. Make the smallest edit that fully implements the learning. Bump the skill's version (semver patch unless the change is structural). Write one changelog line. That line is the rollback record. Set the row's `Status = Applied`.
-- **Score 40 to 69: Flag.** Do not edit anything. Set `Status = Flagged`. It goes into the digest under "Waiting on you" with the proposed change, for Matt's yes or no.
-- **Score under 40: Discard.** Set `Status = Discarded`. It appears in the digest only as a count.
+### tool-specific lessons
+These target one skill via the `Target Skill` relation. Resolve the relation to the Skill Registry page and read its `Self Revision` and `Blast Radius` with:
+`ingest_learning_log.py get-skill TARGET_PAGE_ID`
 
-For `Voice` and `Positioning` rows: **never auto-apply, at any score.** Brand voice and positioning do not get edited by a machine overnight. Set `Status = Flagged`, surface in the digest for Matt's approval.
+Then apply this table:
 
-For `Rosetta Stone`, `Process`, `Other`: same flag-and-approve path as voice, at any score. Set `Status = Flagged`.
+- **Self Revision = locked**: never edit, at any score. Set `Status = needs-approval`. Digest note: "target skill is locked."
+- **Self Revision = propose-only**: never auto-edit, at any score. Set `Status = needs-approval` with the proposed change in the digest for Matt's yes or no.
+- **Self Revision = auto**:
+  - **Score 70+**: auto-apply. Edit the skill's `Definition` (the SKILL.md): make the smallest change that fully implements the `Lesson`. Bump `Version`. Set `Revised By = skill-b`. Set `Last Revised = today`. Set the row `Status = ingested` and stamp `Ingested`.
+  - **Score 40-69**: `Status = needs-approval`. Surface in the digest under "Waiting on you."
+  - **Score under 40**: `Status = rejected`. Digest count only.
 
-**When unsure, score is treated as 69.** The writer is instructed to score 69 rather than 70 whenever intent is ambiguous, so ambiguity flags instead of applies. If you the ingester are ever unsure whether a row qualifies as a clean Skill Change, treat it as Flagged, not Applied.
+**Blast Radius is a hard brake regardless of Self Revision.** If the target skill's `Blast Radius = high` (money, client sends, courts, deploys), never auto-apply even at score 70+ with Self Revision auto. Set `Status = needs-approval`. High blast radius always gets human eyes. This protects the skills where a bad edit has real-world cost.
 
-**One learning, one edit.** If two rows conflict on the same target skill, the higher score wins and applies; the lower-scored one is flagged with a note that it conflicted. Never apply both.
+### unsorted bucket
+The writer left the bucket undetermined. Do not guess. Set `Status = needs-approval` and note "bucket unsorted, needs classification."
 
-**Slug match is mandatory.** If a row's `target` does not match exactly one skill in the Skill Registry, do NOT guess and do NOT edit the closest match. Set `Status = Flagged` with reason "target slug matched no skill" (or "matched multiple"). Unmatched targets never auto-apply.
+### When unsure
+Treat as `needs-approval`, never `ingested`. Ambiguity flags.
 
-## Making a skill edit (the Notion Skill Registry is the source of truth)
+### Target Skill relation checks
+- If a tool-specific row has no `Target Skill` relation, set `Status = needs-approval`, note "tool-specific but no target skill."
+- If the relation points to more than one skill, set `Status = needs-approval`, note "multiple target skills."
+- One lesson, one edit. If two rows target the same skill and conflict, the higher score wins and applies (if it passes the fence); the other becomes `needs-approval` with a conflict note.
 
-Skills are edited in the Notion Skill Registry, not by writing local files on the volume. The registry page is the canonical version; the sync back to Cowork/Hermes is a separate concern (handled by the skill-sync process, Phase 2).
+## Making a skill edit (the Skill Registry is the source of truth)
+
+The canonical skill lives in the Skill Registry `Definition` (the SKILL.md). Edit it there. The sync of that edited SKILL.md back into the running skill on the volume and into Cowork is the Phase 2 concern, not this skill's job.
 
 For an auto-apply:
-1. Find the skill page in the Skill Registry by exact slug match on the row's `target`.
-2. Read its current SOP/body and version.
-3. Apply the smallest change that fully implements the learning `body`. Do not rewrite unrelated sections. Do not "improve" beyond the learning.
-4. Bump the version (patch level, e.g. 1.2.0 to 1.2.1, unless the change adds or removes a step, then minor).
-5. Append one changelog line: `vX.Y.Z — <one-sentence description> — from learning <page_id short> — <UTC date>`.
-6. Update the skill page's version and changelog properties in Notion.
-7. Set the source Learning Log row `Status = Applied` and stamp it with the applied timestamp.
+1. Read the target page's current `Definition` SKILL.md and `Version`.
+2. Apply the smallest change that fully implements the `Lesson`. Do not rewrite unrelated sections. Do not improve beyond the lesson.
+3. Bump `Version` (patch level unless the change adds or removes a step).
+4. Append a changelog note (in `Notes` or at the bottom of the Definition): `vX.Y.Z -- one-sentence description -- from lesson <page_id short> -- <UTC date>`. That line is the rollback record.
+5. Set `Revised By = skill-b`, `Last Revised = today`.
+6. Set the source row `Status = ingested`, stamp `Ingested`.
 
-The changelog line is the undo. If a bad edit ships, Matt sees it in the next digest and the changelog line tells him exactly what to revert.
+The changelog line is the undo. A bad edit shows in the next digest and the changelog says exactly what to revert.
 
-## Promoting to memory (bounded, per the memory-stack design)
+## Memory
 
-The durable home for a skill lesson is the skill it changed, not the memory file. Do NOT copy full lesson bodies into MEMORY.md. MEMORY.md is bounded (~2,200 chars) and fills fast.
-
-For applied skill changes, write at most a single terse breadcrumb line to MEMORY.md under an "Applied lessons" note, only if the lesson changes how Garry should behave generally (not skill-internal detail). Most applied skill edits need no memory write at all, because the behavior now lives in the edited skill. When the memory note approaches its cap, consolidate the oldest breadcrumbs rather than growing the file.
-
-Operator-facts about Matt do NOT come through this path at all. Those are routed by the writer straight to Honcho as conclusions and are inherited through the shared workspace. The ingester never writes operator-facts to memory.
-
-## Marking status (idempotency)
-
-Every row processed this run must end with `Status` set to `Applied`, `Flagged`, or `Discarded`. A row left as `New` will be re-ingested tomorrow. Setting status is not optional and is the last action per row. If a Notion write fails, retry once; if it still fails, leave the row `New` (so it is retried next run, not lost) and note the failure in the digest.
+Behavioral lessons go to Honcho (above), not to MEMORY.md. Tool-specific lessons live in the edited skill, not in memory. Do not copy lesson bodies into MEMORY.md. MEMORY.md is bounded (~2,200 chars); the durable home for a lesson is the skill it changed or the Honcho conclusion.
 
 ## The digest (final step, emailed to Matt)
 
 Always send, even on a zero-change night. Steady-state framing, never "I learned nothing."
 
-Structure:
-- One-line summary: `N applied, M flagged, K discarded. Skill library now at V lessons total.`
-- **Applied** (if any): for each, `skill-slug vX.Y.Z — one-line description`. This is Matt's 24-hour visibility on every auto-edit.
-- **Waiting on you** (if any flagged): for each, `type — target — proposed change — [row link]`. Matt approves or rejects from Notion.
-- **Discarded**: just the count.
-- If nothing at all: `No new lessons today. Running on the current knowledge base of V lessons.`
+- One-line summary: `N ingested, M waiting on you, K rejected.`
+- **Ingested** (if any): for each, `skill-name vX.Y.Z -- one-line description`. Matt's 24-hour visibility on every auto-edit.
+- **Waiting on you** (if any needs-approval): for each, `reason (score, target) -- proposed change -- [row link]`. Group by reason: propose-only, locked, high blast radius, score 40-69, unsorted, no target, conflict.
+- **Rejected**: count only.
+- If nothing: `No pending lessons today. Running on the current skill library.`
 
-Deliver as an email to Matt (his primary inbox), matching the write-before-send discipline: this is outbound-to-Matt, a report, so it sends without an approval gate. Do NOT use em dashes in the digest body. Keep it short.
+Deliver as an email to Matt (his primary inbox). This is outbound-to-Matt, a report, so it sends without an approval gate. No em dashes. Short.
 
 ## Hard rules (Matt's standing communication rules)
 
@@ -128,6 +114,10 @@ Deliver as an email to Matt (his primary inbox), matching the write-before-send 
 - No motivational filler. State what happened.
 - Short and direct.
 
+## Idempotency
+
+Every processed row must end as `ingested`, `needs-approval`, or `rejected`. A row left `pending` will be re-processed tomorrow. If a Notion write fails, retry once; if it still fails, leave the row `pending` (retried next run, not lost) and note the failure in the digest.
+
 ## The silent-failure mode to watch
 
-If the Notion query returns zero rows every night for several nights, that may mean the writer stopped producing rows, not that there was nothing to learn. The digest cannot tell the difference on its own. If Matt reports the digest has said "nothing new" for many days running, check that `learning-writer` is actually running and writing rows before assuming the loop is healthy. This mirrors the Railway "logs show the previous deployment" lesson: a clean-looking empty result can mask an upstream failure.
+If the query returns zero pending rows for several nights, that may mean the writer stopped producing rows, not that there was nothing to learn. If Matt reports the digest has said "nothing pending" for many days, check that `learning-writer` is running and writing rows before assuming the loop is healthy. A clean-looking empty result can mask an upstream failure.
