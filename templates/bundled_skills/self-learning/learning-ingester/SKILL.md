@@ -1,7 +1,7 @@
 ---
 name: learning-ingester
-description: "Garry's nightly self-learning ingester: read pending rows from the Notion Learning Log, apply tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), route behavioral lessons to Honcho, set each row's status, and email Matt a digest of what was ingested, flagged for approval, or rejected."
-version: 2.0.0
+description: "Garry's self-learning ingester, runnable two ways: the nightly cron, or on demand when Matt says 'go learn' on Telegram. Reads pending rows from the Notion Learning Log, applies tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), routes behavioral lessons to Honcho, sets each row's status, and reports what was ingested, flagged for approval, or rejected. Cron runs email Matt a digest; manual runs reply in the chat."
+version: 2.1.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -9,6 +9,11 @@ prerequisites:
   env_vars: [NOTION_TOKEN, NOTION_LEARNING_LOG_DS, NOTION_SKILL_REGISTRY_DS]
 triggers:
   - the Self-Learning Ingester cron job fires
+  - user says "go learn"
+  - user says "learn now"
+  - user says "run the ingester"
+  - user says "ingest your lessons"
+  - user says "process the learning log"
   - user asks to ingest the learning log
   - user asks to run the nightly self-learning
 tags: [self-learning, notion, skills, cron, memory, digest]
@@ -19,9 +24,20 @@ metadata:
 
 # Learning Ingester
 
-Garry's standing nightly job: turn scored rows in the Notion Learning Log into real changes, safely. Read pending rows, apply the ones that pass the fence, flag the ones that need Matt, reject the weak ones, then email Matt a digest. Every applied change is reversible.
+Garry's standing job: turn scored rows in the Notion Learning Log into real changes, safely. Read pending rows, apply the ones that pass the fence, flag the ones that need Matt, reject the weak ones, then report. Every applied change is reversible.
 
 This is the reader half of the loop. The writer half (`learning-writer`) produces the rows this skill consumes. This skill never writes new lessons; it only processes existing ones.
+
+## Two entry points, one implementation
+
+This skill runs identically whether triggered by the nightly cron or by Matt on Telegram ("go learn", "learn now", "run the ingester", "ingest your lessons"). Same query, same fence, same status writes. The only difference is how the report is delivered:
+
+- **Cron run**: email the digest to Matt (his primary inbox), as specified in the digest section.
+- **Manual run (Matt asked in chat)**: reply with the digest content directly in the Telegram chat, immediately, in the same format. Do not also send the email; Matt just read it. The chat reply is the visibility record for that run.
+
+Manual runs are safe to repeat. Only `pending` rows are processed, so "go learn" twice in a row processes nothing the second time and replies with the steady-state line.
+
+Do not confuse this with `log-this-now`. That skill captures a NEW lesson from the current conversation and scores it. This skill processes lessons already sitting in the Learning Log. If Matt says "log this" or describes something to remember, that is `log-this-now`. If Matt says "go learn" or asks to process the log, that is this skill.
 
 ## Live schema (verified against Garry Ops, do not assume otherwise)
 
@@ -41,13 +57,13 @@ This is the reader half of the loop. The writer half (`learning-writer`) produce
    It prints pending rows: `{page_id, lesson, score, bucket, target_skill_ids, rationale, source}`.
 2. Process each row through the fence below.
 3. For each row, set its `Status` and (when ingested) stamp `Ingested`.
-4. Email Matt the digest (final step).
+4. Deliver the report (final step): email on a cron run, in-chat reply on a manual run.
 
-If `count` is 0, do NOT stay silent. Send the steady-state digest, then exit.
+If `count` is 0, do NOT stay silent. Send the steady-state report through the run's delivery channel, then exit.
 
 ## The fence (two layers: Bucket/Score, then the target skill's Self Revision)
 
-Bucket governs the destination. Score and the target skill's `Self Revision` govern whether a tool-specific edit auto-applies.
+Bucket governs the destination. Score and the target skill's `Self Revision` govern whether a tool-specific edit auto-applies. The fence is identical for cron and manual runs. A manual "go learn" grants no extra permission: locked stays locked, propose-only stays propose-only, high blast radius still stops at needs-approval.
 
 ### behavioral lessons
 Route to Honcho as a conclusion (a specific, falsifiable observation about how Matt decides, prioritizes, or works). These never edit a skill. Set `Status = ingested` once written to Honcho. If Honcho is not configured in this environment, set `Status = needs-approval` and note in the digest that behavioral routing is pending Honcho setup, so the lesson is not silently lost.
@@ -96,9 +112,9 @@ The changelog line is the undo. A bad edit shows in the next digest and the chan
 
 Behavioral lessons go to Honcho (above), not to MEMORY.md. Tool-specific lessons live in the edited skill, not in memory. Do not copy lesson bodies into MEMORY.md. MEMORY.md is bounded (~2,200 chars); the durable home for a lesson is the skill it changed or the Honcho conclusion.
 
-## The digest (final step, emailed to Matt)
+## The digest (final step)
 
-Always send, even on a zero-change night. Steady-state framing, never "I learned nothing."
+Always send, even on a zero-change run. Steady-state framing, never "I learned nothing."
 
 - One-line summary: `N ingested, M waiting on you, K rejected.`
 - **Ingested** (if any): for each, `skill-name vX.Y.Z -- one-line description`. Matt's 24-hour visibility on every auto-edit.
@@ -106,7 +122,11 @@ Always send, even on a zero-change night. Steady-state framing, never "I learned
 - **Rejected**: count only.
 - If nothing: `No pending lessons today. Running on the current skill library.`
 
-Deliver as an email to Matt (his primary inbox). This is outbound-to-Matt, a report, so it sends without an approval gate. No em dashes. Short.
+Delivery depends on the entry point:
+- **Cron run**: email to Matt (his primary inbox). This is outbound-to-Matt, a report, so it sends without an approval gate.
+- **Manual run**: reply in the Telegram chat, same content and format, no email.
+
+No em dashes. Short.
 
 ## Hard rules (Matt's standing communication rules)
 
@@ -116,8 +136,12 @@ Deliver as an email to Matt (his primary inbox). This is outbound-to-Matt, a rep
 
 ## Idempotency
 
-Every processed row must end as `ingested`, `needs-approval`, or `rejected`. A row left `pending` will be re-processed tomorrow. If a Notion write fails, retry once; if it still fails, leave the row `pending` (retried next run, not lost) and note the failure in the digest.
+Every processed row must end as `ingested`, `needs-approval`, or `rejected`. A row left `pending` will be re-processed tomorrow. If a Notion write fails, retry once; if it still fails, leave the row `pending` (retried next run, not lost) and note the failure in the digest. This same guarantee is what makes manual runs repeat-safe.
 
 ## The silent-failure mode to watch
 
 If the query returns zero pending rows for several nights, that may mean the writer stopped producing rows, not that there was nothing to learn. If Matt reports the digest has said "nothing pending" for many days, check that `learning-writer` is running and writing rows before assuming the loop is healthy. A clean-looking empty result can mask an upstream failure.
+
+## Changelog
+
+v2.1.0 -- add on-demand Telegram trigger (go learn, learn now, run the ingester, ingest your lessons) with in-chat report delivery on manual runs; fence unchanged -- 2026-07-13
