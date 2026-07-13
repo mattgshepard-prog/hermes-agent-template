@@ -113,4 +113,36 @@ rm -f /data/.hermes/gateway.pid
 ) 2>/dev/null || true
 echo "[start.sh] Notion MCP pre-warm started in background (non-blocking)."
 
+
+# ── Seed bundled skills onto the volume on boot (non-destructive) ──────────
+# Phase 1 self-learning loop and any future bundled skills ship inside the
+# image at /app/templates/bundled_skills/ (COPYd by the Dockerfile). Skills
+# must live on the persistent volume at /data/.hermes/skills/ for hermes to
+# load them. This copies each bundled skill into place ONLY if it is not
+# already present on the volume, so it never clobbers a skill that has been
+# edited on the volume (e.g. by the self-learning loop itself). New bundled
+# skills appear automatically on the next boot after a push; existing ones are
+# left untouched. Fully failure-tolerant: never blocks gateway boot.
+#
+# To force a bundled skill to overwrite the volume copy (e.g. shipping a fix),
+# bump a version marker by deleting that skill dir on the volume, or set
+# HERMES_RESEED_SKILLS=1 in Railway to overwrite all bundled skills this boot.
+BUNDLED_SKILLS_DIR="/app/templates/bundled_skills"
+if [ -d "$BUNDLED_SKILLS_DIR" ]; then
+  seeded_skills=0
+  for group in "$BUNDLED_SKILLS_DIR"/*/; do
+    [ -d "$group" ] || continue
+    for skill in "$group"*/; do
+      [ -d "$skill" ] || continue
+      rel="${skill#$BUNDLED_SKILLS_DIR/}"
+      dest="/data/.hermes/skills/${rel%/}"
+      if [ ! -d "$dest" ] || [ "${HERMES_RESEED_SKILLS:-0}" = "1" ]; then
+        mkdir -p "$(dirname "$dest")"
+        cp -r "$skill" "$dest" 2>/dev/null && seeded_skills=$((seeded_skills + 1)) || true
+      fi
+    done
+  done
+  echo "[start.sh] Seeded ${seeded_skills} bundled skill(s) onto the volume."
+fi
+
 exec python /app/server.py
