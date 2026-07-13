@@ -137,6 +137,11 @@ if [ -d "$BUNDLED_SKILLS_DIR" ]; then
       rel="${skill#$BUNDLED_SKILLS_DIR/}"
       dest="/data/.hermes/skills/${rel%/}"
       if [ ! -d "$dest" ] || [ "${HERMES_RESEED_SKILLS:-0}" = "1" ]; then
+        # Remove any existing dest first. Without this, `cp -r src dest` when
+        # dest already exists copies src INTO dest (dest/src/...) instead of
+        # overwriting, nesting the skill one level deep and leaving the stale
+        # copy at the top level (found 2026-07-13 during the v2 reseed).
+        rm -rf "$dest"
         mkdir -p "$(dirname "$dest")"
         cp -r "$skill" "$dest" 2>/dev/null && seeded_skills=$((seeded_skills + 1)) || true
       fi
