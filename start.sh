@@ -150,4 +150,59 @@ if [ -d "$BUNDLED_SKILLS_DIR" ]; then
   echo "[start.sh] Seeded ${seeded_skills} bundled skill(s) onto the volume."
 fi
 
+# ── Wire Honcho as the memory provider (non-destructive) ────────────────────
+# Root cause (found 2026-07-15 on Garry CoS): HONCHO_API_KEY was seeded into
+# .env (honcho-wire-v1) but config.yaml still had memory.provider: '' — and
+# the honcho plugin only loads (and only exposes its memory tools to the
+# agent) when memory.provider selects it. Result: the learning-ingester
+# correctly reported "Honcho not configured" and parked every behavioral
+# lesson at needs-approval instead of routing it to Honcho.
+#
+# Fix: when HONCHO_API_KEY is present and memory.provider is EMPTY, set it to
+# honcho via `hermes config set` (the official atomic write path). Guards:
+# - Only fires when the provider is empty, so an explicitly chosen different
+#   provider (mem0, supermemory, ...) — or a deliberate empty-after-disable
+#   via HERMES_SKIP_HONCHO_WIRE=1 — is never clobbered.
+# - config.yaml is backed up once before the first wire.
+# - Fully failure-tolerant: never blocks gateway boot.
+# The honcho plugin itself resolves credentials via its config chain
+# ($HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars); with no
+# honcho.json present it falls through to HONCHO_API_KEY from the
+# environment, which the .env seeding above guarantees.
+if [ "${HERMES_SKIP_HONCHO_WIRE:-0}" != "1" ] && [ -n "${HONCHO_API_KEY:-}" ] && [ -f /data/.hermes/config.yaml ]; then
+  current_provider="$(python - <<'PYEOF' 2>/dev/null || true
+import yaml
+try:
+    cfg = yaml.safe_load(open("/data/.hermes/config.yaml", encoding="utf-8")) or {}
+    print(((cfg.get("memory") or {}).get("provider") or "").strip())
+except Exception:
+    print("")
+PYEOF
+)"
+  if [ -z "$current_provider" ]; then
+    if [ ! -f /data/.hermes/config.yaml.bak-pre-honcho-wire ]; then
+      cp /data/.hermes/config.yaml /data/.hermes/config.yaml.bak-pre-honcho-wire 2>/dev/null || true
+    fi
+    if hermes config set memory.provider honcho >/dev/null 2>&1; then
+      echo "[start.sh] Wired memory.provider=honcho in config.yaml (was empty; HONCHO_API_KEY present)."
+    else
+      echo "[start.sh] WARNING: hermes config set memory.provider honcho failed; continuing boot without Honcho."
+    fi
+  else
+    echo "[start.sh] memory.provider already '${current_provider}'; Honcho wire skipped."
+  fi
+else
+  echo "[start.sh] Honcho wire skipped (disabled, no HONCHO_API_KEY, or no config.yaml yet)."
+fi
+
+# ── Seed self-learning cron jobs (non-destructive) ──────────────────────────
+# Registers Garry Learning Writer (06:00 UTC) and Garry Learning Ingester
+# (10:00 UTC) in $HERMES_HOME/cron/jobs.json if absent, matched by name.
+# Existing jobs are never touched, so manual edits on the volume win. Runs
+# pre-gateway, so there is no lock contention with the live scheduler.
+# Closes the last manual touch in the self-learning loop's cold deploy:
+# Garry's live jobs were registered by hand on 2026-07-14; a fresh volume now
+# gets them automatically. Failure-tolerant: never blocks gateway boot.
+python /app/boot/seed_cron_jobs.py || echo "[start.sh] WARNING: cron job seed failed; continuing boot."
+
 exec python /app/server.py
