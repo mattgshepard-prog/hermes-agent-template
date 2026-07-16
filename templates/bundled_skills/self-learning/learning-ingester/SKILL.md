@@ -1,7 +1,7 @@
 ---
 name: learning-ingester
 description: "Garry's self-learning ingester, runnable two ways: the nightly cron, or on demand when Matt says 'go learn' on Telegram. Reads pending rows from the Notion Learning Log, applies tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), routes behavioral lessons to Honcho, sets each row's status, and reports what was ingested, flagged for approval, or rejected. Cron runs email Matt a digest; manual runs reply in the chat."
-version: 2.1.0
+version: 2.2.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -48,6 +48,7 @@ Do not confuse this with `log-this-now`. That skill captures a NEW lesson from t
 ## Files
 
 - Pre-pass script: `scripts/ingest_learning_log.py` (queries pending rows; helpers for status, ingested-stamp, skill lookup)
+- Honcho routing script: `scripts/route_behavioral_to_honcho.py` (the ONLY check and write path for behavioral lessons)
 - Notion access: the script's own HTTP calls, or the `notion` skill
 - Cron delivery: Matt's Telegram; digest emailed to Matt
 
@@ -66,7 +67,17 @@ If `count` is 0, do NOT stay silent. Send the steady-state report through the ru
 Bucket governs the destination. Score and the target skill's `Self Revision` govern whether a tool-specific edit auto-applies. The fence is identical for cron and manual runs. A manual "go learn" grants no extra permission: locked stays locked, propose-only stays propose-only, high blast radius still stops at needs-approval.
 
 ### behavioral lessons
-Route to Honcho as a conclusion (a specific, falsifiable observation about how Matt decides, prioritizes, or works). These never edit a skill. Set `Status = ingested` once written to Honcho. If Honcho is not configured in this environment, set `Status = needs-approval` and note in the digest that behavioral routing is pending Honcho setup, so the lesson is not silently lost.
+Route to Honcho as a conclusion (a specific, falsifiable observation about how Matt decides, prioritizes, or works). These never edit a skill.
+
+The routing script is the single source of truth for whether Honcho is configured AND for the write itself. Do not inspect environment variables to decide whether Honcho is available, do not reason about config.yaml, and do not improvise another route through memory tools. Run the script; believe its output; quote its output.
+
+1. Check availability:
+   `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/route_behavioral_to_honcho.py check`
+   Exit 0 with `"configured": true` means Honcho is live. Anything else means it is not; the digest must quote the script's `reason` field verbatim, never a guessed explanation.
+2. Write all behavioral rows in one call. Pipe a JSON array of `{"content": lesson text, "row_id": page_id}` to:
+   `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/route_behavioral_to_honcho.py write`
+   The script writes each lesson as a Honcho conclusion (observer: Garry's peer, observed: Matt's peer) and prints JSON with a `conclusion_id` per `row_id`.
+3. Set `Status = ingested` and stamp `Ingested` ONLY for rows whose `row_id` appears in the script output with a non-null `conclusion_id`. Any row not confirmed stays `needs-approval` with the script's error quoted in the digest, so the lesson is not silently lost.
 
 ### tool-specific lessons
 These target one skill via the `Target Skill` relation. Resolve the relation to the Skill Registry page and read its `Self Revision` and `Blast Radius` with:
@@ -117,7 +128,7 @@ Behavioral lessons go to Honcho (above), not to MEMORY.md. Tool-specific lessons
 Always send, even on a zero-change run. Steady-state framing, never "I learned nothing."
 
 - One-line summary: `N ingested, M waiting on you, K rejected.`
-- **Ingested** (if any): for each, `skill-name vX.Y.Z -- one-line description`. Matt's 24-hour visibility on every auto-edit.
+- **Ingested** (if any): for each, `skill-name vX.Y.Z -- one-line description`. Matt's 24-hour visibility on every auto-edit. Behavioral ingests list as `honcho -- lesson first words -- conclusion_id`.
 - **Waiting on you** (if any needs-approval): for each, `reason (score, target) -- proposed change -- [row link]`. Group by reason: propose-only, locked, high blast radius, score 40-69, unsorted, no target, conflict.
 - **Rejected**: count only.
 - If nothing: `No pending lessons today. Running on the current skill library.`
@@ -145,3 +156,4 @@ If the query returns zero pending rows for several nights, that may mean the wri
 ## Changelog
 
 v2.1.0 -- add on-demand Telegram trigger (go learn, learn now, run the ingester, ingest your lessons) with in-chat report delivery on manual runs; fence unchanged -- 2026-07-13
+v2.2.0 -- behavioral routing made concrete: new scripts/route_behavioral_to_honcho.py is the only check and write path (Honcho conclusions, observer Garry, observed Matt); agent forbidden from inferring Honcho availability from env inspection; ingested requires a conclusion_id from script output; fence unchanged -- 2026-07-16
