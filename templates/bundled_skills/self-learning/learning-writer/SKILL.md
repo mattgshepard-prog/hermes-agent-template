@@ -1,7 +1,7 @@
 ---
 name: learning-writer
-description: "Nightly self-learning sweep: read the day's session transcripts, extract and score lessons 0-100, and route by bucket. behavioral lessons about Matt go to Honcho as conclusions. tool-specific lessons become pending rows in the Notion Learning Log, linked to the target skill in the Skill Registry, for the ingester to process."
-version: 2.0.0
+description: "Nightly self-learning sweep: read the day's session transcripts, extract and score lessons 0-100, and route by bucket. behavioral lessons about the operator go to Honcho as conclusions. tool-specific lessons become pending rows in the Notion Learning Log, linked to the target skill in the Skill Registry, for the ingester to process."
+version: 2.1.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -23,7 +23,7 @@ The writer half of the loop. Once a day, read everything that happened, distill 
 
 Runs primarily on the Cowork surface (where the day's transcripts live). Hermes can also run it to log its own lessons inline, with `Source` noting the Hermes session.
 
-## Live schema (verified against Garry Ops)
+## Live schema (verified against the live Ops workspace)
 
 **Learning Log** row: `Lesson` (title, the actionable rule), `Score` (0-100), `Bucket` (`behavioral` | `tool-specific` | `unsorted`), `Target Skill` (relation to a Skill Registry page, for tool-specific), `Rationale` (text), `Source` (text), `Status` (`pending` on write).
 
@@ -38,7 +38,7 @@ Runs primarily on the Cowork surface (where the day's transcripts live). Hermes 
 ## How it runs
 
 1. Gather the day's transcripts. On Cowork read the full session transcripts, including compacted ones (read the compacted summary if the raw is unavailable).
-2. Extract candidate lessons: corrections Matt made, friction in a skill, decisions with reasoning, revealed preferences, any skill that misbehaved.
+2. Extract candidate lessons: corrections the operator made, friction in a skill, decisions with reasoning, revealed preferences, any skill that misbehaved.
 3. Score and bucket each one (below).
 4. Write tool-specific and unsorted lessons to the Learning Log as `pending` rows. Write behavioral lessons to Honcho as conclusions.
 
@@ -46,7 +46,7 @@ If nothing is worth recording, write nothing and exit. An empty day is fine.
 
 ## Scoring (0-100)
 
-- Hard explicit correction from Matt: near 100.
+- Hard explicit correction from the operator: near 100.
 - Clear preference stated once: 70-90.
 - Reasonable inference from context: 40-69.
 - Weak inference from one ambiguous moment: under 40.
@@ -55,13 +55,13 @@ If nothing is worth recording, write nothing and exit. An empty day is fine.
 
 ## Bucketing (the destination decision)
 
-**behavioral**: anything about Matt as a person or operator, preferences, mental models, business facts, standing instructions. Goes to Honcho as a conclusion (a specific, falsifiable observation). Hermes inherits these through the shared Honcho workspace. Do NOT create a Learning Log row for a behavioral lesson. If Honcho is not configured in this environment, hold the lesson and note it, do not drop it.
+**behavioral**: anything about the operator as a person, preferences, mental models, business facts, standing instructions. Goes to Honcho as a conclusion (a specific, falsifiable observation). Hermes inherits these through the shared Honcho workspace. Do NOT create a Learning Log row for a behavioral lesson. If Honcho is not configured in this environment, hold the lesson and note it, do not drop it.
 
 **tool-specific**: a procedural edit to one named skill. Becomes a Learning Log row with `Bucket = tool-specific` and a `Target Skill` relation to that skill's Registry page. The `Lesson` title must be self-contained: the ingester acts on it without the transcript. Resolve the target skill's page id first:
 `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py find-skill "Exact Skill Name"`
 If the name matches no skill, set `Bucket = unsorted` (do not guess a target) and let the ingester flag it.
 
-**unsorted**: you cannot cleanly classify it. Write it `unsorted` with no target; the ingester routes it to needs-approval for Matt to triage. Prefer unsorted over a wrong guess.
+**unsorted**: you cannot cleanly classify it. Write it `unsorted` with no target; the ingester routes it to needs-approval for the operator to triage. Prefer unsorted over a wrong guess.
 
 ## Writing rows
 
@@ -76,3 +76,7 @@ Row shape: `lesson`, `score`, `bucket`, `target_skill_id` (for tool-specific), `
 - Prefer `unsorted` over a wrong `Target Skill`.
 - Score conservatively. When unsure, 69.
 - No em dashes in any text.
+
+## Changelog
+
+v2.1.0 -- operator-neutral wording for Bot Builder client baseline; logic and fence unchanged -- 2026-07-19

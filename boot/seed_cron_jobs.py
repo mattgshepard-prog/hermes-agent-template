@@ -7,13 +7,15 @@ start.sh before the gateway starts, so there is no lock contention with the
 running scheduler.
 
 Design rules (Bot Builder cold-deploy standard):
-- Idempotent: matched by exact job name. Existing jobs are NEVER modified,
-  re-scheduled, or overwritten — a job Matt has edited on the volume wins.
+- Idempotent: matched by job-name SUFFIX. A pre-existing job whose name
+  ends with the wanted name (e.g. "Garry Learning Writer" for "Learning
+  Writer") satisfies the seed, so personalized bots never get duplicates. Existing jobs are NEVER modified,
+  re-scheduled, or overwritten — a job the operator has edited on the volume wins.
 - Non-blocking: every failure path logs and exits 0. A broken seed must
   never stop gateway boot.
 - Atomic write: temp file + os.replace, matching hermes's own write style.
 - No hardcoded tenant identity: the Telegram delivery target comes from
-  GARRY_TELEGRAM_CHAT_ID, falling back to the first entry in
+  BOT_TELEGRAM_CHAT_ID (legacy alias GARRY_TELEGRAM_CHAT_ID), falling back to the first entry in
   TELEGRAM_ALLOWED_USERS. If neither is set, seeding is skipped with a loud
   log line (a digest with nowhere to deliver is worse than no job).
 
@@ -42,7 +44,8 @@ def log(msg: str) -> None:
 
 def resolve_chat_id() -> str | None:
     """Telegram chat id for cron digest delivery, from env only."""
-    explicit = os.environ.get("GARRY_TELEGRAM_CHAT_ID", "").strip()
+    explicit = (os.environ.get("BOT_TELEGRAM_CHAT_ID", "").strip()
+                or os.environ.get("GARRY_TELEGRAM_CHAT_ID", "").strip())
     if explicit:
         return explicit
     allowed = os.environ.get("TELEGRAM_ALLOWED_USERS", "").strip()
@@ -123,15 +126,15 @@ INGESTER_PROMPT = (
 def main() -> int:
     chat_id = resolve_chat_id()
     if not chat_id:
-        log("SKIPPED: no GARRY_TELEGRAM_CHAT_ID or TELEGRAM_ALLOWED_USERS "
+        log("SKIPPED: no BOT_TELEGRAM_CHAT_ID or TELEGRAM_ALLOWED_USERS "
             "in env; cron jobs need a Telegram delivery target. Nothing "
             "was written.")
         return 0
 
     wanted = [
-        ("Garry Learning Writer", "learning-writer", WRITER_PROMPT,
+        ("Learning Writer", "learning-writer", WRITER_PROMPT,
          "0 6 * * *", 6),
-        ("Garry Learning Ingester", "learning-ingester", INGESTER_PROMPT,
+        ("Learning Ingester", "learning-ingester", INGESTER_PROMPT,
          "0 10 * * *", 10),
     ]
 
@@ -146,14 +149,15 @@ def main() -> int:
                 "refusing to touch it.")
             return 0
 
-        existing_names = {
-            j.get("name") for j in raw["jobs"] if isinstance(j, dict)
-        }
+        existing_names = [
+            str(j.get("name") or "") for j in raw["jobs"] if isinstance(j, dict)
+        ]
 
         added = []
         for name, skill, prompt, expr, hour in wanted:
-            if name in existing_names:
-                log(f"present: {name} (untouched)")
+            match = next((e for e in existing_names if e.endswith(name)), None)
+            if match is not None:
+                log(f"present: {match} satisfies '{name}' (untouched)")
                 continue
             raw["jobs"].append(
                 build_job(name, skill, prompt, expr, hour, chat_id)
