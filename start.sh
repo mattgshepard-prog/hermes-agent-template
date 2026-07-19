@@ -195,6 +195,45 @@ else
   echo "[start.sh] Honcho wire skipped (disabled, no HONCHO_API_KEY, or no config.yaml yet)."
 fi
 
+# ── Seed Honcho peer pin (non-destructive) ──────────────────────────────────
+# Root cause (found 2026-07-16 on Garry CoS): without a honcho.json, each
+# gateway platform mints its own runtime peer, splitting one operator into
+# multiple Honcho identities (Matt's email peer accumulated 33 conclusions
+# apart from his Telegram peer before the manual merge). The fix on Garry was
+# a hand-written /data/.hermes/honcho.json pinning all runtime identities to
+# the canonical Telegram peer via pinUserPeer — which a fresh volume never
+# gets. This seeds it automatically for the single-operator (client bot) case:
+# peerName = first ID in TELEGRAM_ALLOWED_USERS, pinUserPeer = true.
+# Guards:
+# - Only when HONCHO_API_KEY and TELEGRAM_ALLOWED_USERS are both present.
+# - Only when /data/.hermes/honcho.json is ABSENT — an existing file (however
+#   edited, e.g. Garry's hand-merged pin) is never touched.
+# - HERMES_SKIP_HONCHO_PIN=1 opts out (multi-user bots want per-user peers).
+# - Fully failure-tolerant: never blocks gateway boot.
+# Schema per hermes plugins/memory/honcho/client.py at v2026.6.19: honcho.json
+# at $HERMES_HOME resolves first; keys peerName + pinUserPeer (which wins over
+# legacy pinPeerName). File written 600 like auth.json.
+if [ "${HERMES_SKIP_HONCHO_PIN:-0}" != "1" ] && [ -n "${HONCHO_API_KEY:-}" ] \
+   && [ -n "${TELEGRAM_ALLOWED_USERS:-}" ] && [ ! -f /data/.hermes/honcho.json ]; then
+  if python - <<'PYEOF2' >/dev/null 2>&1
+import json, os
+peer = os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")[0].strip()
+if not peer:
+    raise SystemExit(1)
+path = "/data/.hermes/honcho.json"
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"peerName": peer, "pinUserPeer": True}, f, indent=2)
+os.chmod(path, 0o600)
+PYEOF2
+  then
+    echo "[start.sh] Seeded honcho.json peer pin (pinUserPeer=true, peer from TELEGRAM_ALLOWED_USERS)."
+  else
+    echo "[start.sh] WARNING: honcho.json peer pin seed failed; continuing boot."
+  fi
+else
+  echo "[start.sh] Honcho peer pin seed skipped (present, disabled, or missing HONCHO_API_KEY/TELEGRAM_ALLOWED_USERS)."
+fi
+
 # ── Seed self-learning cron jobs (non-destructive) ──────────────────────────
 # Registers Garry Learning Writer (06:00 UTC) and Garry Learning Ingester
 # (10:00 UTC) in $HERMES_HOME/cron/jobs.json if absent, matched by name.

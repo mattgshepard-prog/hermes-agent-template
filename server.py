@@ -816,6 +816,48 @@ class Gateway:
         except Exception as exc:
             print(f"[gateway] Composio refresh skipped (non-fatal): {exc}", flush=True)
 
+
+    def _register_notion_mcp(self, env: dict) -> None:
+        """Register the Notion stdio MCP server in config.yaml's mcp_servers
+        block when NOTION_TOKEN is present and no notion entry exists yet.
+
+        Mirrors the manual `hermes mcp add notion` registration performed on
+        Garry CoS 2026-07-11 (deploy_notion_mcp.sh), which lived only on that
+        volume's config.yaml and therefore never reached a cold deploy. The
+        env value is written as the literal reference ${NOTION_TOKEN} so the
+        token is resolved by hermes at spawn time from the gateway env (seeded
+        into .env by start.sh) and never stored in config. Non-destructive:
+        an existing notion entry (however edited) is never touched, so manual
+        volume edits win. Silent no-op when NOTION_TOKEN is absent — Notion is
+        optional per client. Any failure is logged one line and swallowed:
+        Notion must never block the gateway from starting.
+        """
+        if not env.get("NOTION_TOKEN", ""):
+            return
+        try:
+            import yaml  # deferred import, mirrors write_config_yaml()
+
+            config_path = Path(HERMES_HOME) / "config.yaml"
+            config: dict = {}
+            if config_path.exists():
+                with config_path.open() as f:
+                    loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    config = loaded
+            servers = config.setdefault("mcp_servers", {})
+            if "notion" in servers:
+                return
+            servers["notion"] = {
+                "command": "npx",
+                "args": ["-y", "notion-mcp-server"],
+                "env": {"NOTION_TOKEN": "${NOTION_TOKEN}"},
+            }
+            with config_path.open("w") as f:
+                yaml.safe_dump(config, f, sort_keys=False)
+            print("[gateway] Notion MCP server registered in config.yaml", flush=True)
+        except Exception as exc:
+            print(f"[gateway] Notion MCP registration skipped (non-fatal): {exc}", flush=True)
+
     async def start(self, *, reset_budget: bool = True):
         if self.proc and self.proc.returncode is None:
             return
@@ -838,6 +880,7 @@ class Gateway:
             # Write config.yaml so hermes picks up the model (env vars alone aren't always enough)
             write_config_yaml(read_env(ENV_FILE))
             await self._refresh_composio_mcp(env)
+            self._register_notion_mcp(env)
             self.proc = await asyncio.create_subprocess_exec(
                 "hermes", "gateway",
                 stdout=asyncio.subprocess.PIPE,
