@@ -8,6 +8,20 @@ after the agent, finding no concrete write path, wrongly reported
 "HONCHO_API_KEY is not present in this environment" while the key sat in the
 gateway env the whole time. One command, one truth.
 
+Instrumented 2026-07-25. The original _connect() collapsed two distinct
+failure conditions into one message:
+
+    if not cfg.enabled or not (cfg.api_key or cfg.base_url):
+        raise RuntimeError("Honcho config chain resolved no API key or base URL ...")
+
+A disabled provider therefore reported itself as a missing credential, which
+sent two days of cron failures (Garry 07-23 06:01, 07-23 10:00, 07-25 10:01;
+Bailey 07-25 10:00) to the wrong layer. The plugin's own CLI already gets this
+right (plugins/memory/honcho/cli.py:1065). This script now does too, and
+attaches a "diag" object showing exactly what the config chain resolved.
+
+No secret values are ever printed. Keys are reported as presence and length.
+
 Identity contract (verified against the live provider 2026-07-16):
   observer  = the assistant peer (cfg.ai_peer, "hermes" by default). Dialectic
               queries run with ai_observe_others=True, so the assistant peer's
@@ -25,8 +39,12 @@ script and the live memory provider always agree on workspace and key.
 Commands:
   check   Print JSON {configured, workspace, observer, observed}.
           Exit 0 when Honcho is reachable and both peers resolve.
-          Exit 2 when not configured, with a "reason" field. The digest must
-          quote that reason verbatim, never a guessed one.
+          Exit 2 when not configured, with a "reason" field and a "diag"
+          object. The digest must quote that reason verbatim, never a
+          guessed one.
+  diag    Print the full resolution picture and exit 0 regardless of state.
+          Use this to compare contexts (gateway vs shell vs cron) without
+          needing a failure to be in progress.
   write   Read a JSON array from stdin: [{"content": str, "row_id": str}].
           Write each as a conclusion in one batch. Print JSON:
           {"written": N, "results": [{"row_id", "conclusion_id"}, ...],
@@ -39,8 +57,101 @@ import json
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, "/opt/hermes-agent")
+
+HERMES_HOME_DEFAULT = "/data/.hermes"
+
+# Populated by _connect() so failure paths can report what was actually
+# resolved rather than guessing.
+_LAST_CFG = None
+
+
+def _hermes_home() -> str:
+    return os.environ.get("HERMES_HOME") or HERMES_HOME_DEFAULT
+
+
+def _path_state(path: str) -> dict:
+    """Existence and readability of a config path. Never reads contents."""
+    try:
+        exists = os.path.exists(path)
+        return {
+            "path": path,
+            "exists": exists,
+            "readable": os.access(path, os.R_OK) if exists else False,
+            "size": os.path.getsize(path) if exists else None,
+        }
+    except Exception as e:
+        return {"path": path, "error": f"{type(e).__name__}: {e}"}
+
+
+def _env_state(name: str) -> dict:
+    """Presence and length of an env var. Never the value."""
+    v = os.environ.get(name)
+    if v is None:
+        return {"set": False}
+    return {"set": True, "len": len(v)}
+
+
+def _safe(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _diag_payload(cfg=None) -> dict:
+    home = _hermes_home()
+    payload = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "hermes_home_env": os.environ.get("HERMES_HOME"),
+        "hermes_home_resolved": home,
+        "home_env": os.environ.get("HOME"),
+        "cwd": _safe(os.getcwd),
+        "uid": _safe(os.getuid),
+        "pid": os.getpid(),
+        "gateway_flag": os.environ.get("_HERMES_GATEWAY"),
+        "argv0": sys.argv[0],
+        "files": {
+            "honcho_json": _path_state(os.path.join(home, "honcho.json")),
+            "hermes_env": _path_state(os.path.join(home, ".env")),
+            "config_yaml": _path_state(os.path.join(home, "config.yaml")),
+            "user_honcho_config": _path_state(
+                os.path.expanduser("~/.honcho/config.json")
+            ),
+        },
+        "env": {
+            "HONCHO_API_KEY": _env_state("HONCHO_API_KEY"),
+            "HONCHO_BASE_URL": _env_state("HONCHO_BASE_URL"),
+            "HONCHO_WORKSPACE": _env_state("HONCHO_WORKSPACE"),
+            "TELEGRAM_ALLOWED_USERS": _env_state("TELEGRAM_ALLOWED_USERS"),
+            "GARRY_OPERATOR_PEER_ID": _env_state("GARRY_OPERATOR_PEER_ID"),
+        },
+    }
+    if cfg is not None:
+        api_key = getattr(cfg, "api_key", None) or ""
+        payload["cfg"] = {
+            "enabled": bool(getattr(cfg, "enabled", False)),
+            "api_key_present": bool(api_key),
+            "api_key_len": len(api_key),
+            "base_url": getattr(cfg, "base_url", None),
+            "workspace_id": getattr(cfg, "workspace_id", None),
+            "ai_peer": getattr(cfg, "ai_peer", None),
+        }
+    else:
+        payload["cfg"] = None
+    return payload
+
+
+def _load_cfg():
+    """Resolve HonchoClientConfig, recording it for diagnostics."""
+    global _LAST_CFG
+    from plugins.memory.honcho.client import HonchoClientConfig
+
+    cfg = HonchoClientConfig.from_global_config()
+    _LAST_CFG = cfg
+    return cfg
 
 
 def _resolve_observed() -> str | None:
@@ -57,17 +168,23 @@ def _resolve_observed() -> str | None:
 
 def _connect():
     """Return (client, cfg, observer_id, observed_id) or raise with a plain reason."""
-    from plugins.memory.honcho.client import (
-        HonchoClientConfig,
-        get_honcho_client,
-    )
+    from plugins.memory.honcho.client import get_honcho_client
 
-    cfg = HonchoClientConfig.from_global_config()
-    if not cfg.enabled or not (cfg.api_key or cfg.base_url):
+    cfg = _load_cfg()
+
+    # Two distinct conditions, two distinct reasons. Collapsing these is what
+    # made the 07-23 and 07-25 cron failures unreadable.
+    if not cfg.enabled:
         raise RuntimeError(
-            "Honcho config chain resolved no API key or base URL "
-            "(checked honcho.json, ~/.honcho/config.json, env vars)."
+            "Honcho resolved as DISABLED (cfg.enabled is False). "
+            "This is not a missing credential. See diag."
         )
+    if not (cfg.api_key or cfg.base_url):
+        raise RuntimeError(
+            "Honcho enabled but the config chain resolved neither an API key "
+            "nor a base URL. See diag."
+        )
+
     observed = _resolve_observed()
     if not observed:
         raise RuntimeError(
@@ -95,8 +212,44 @@ def cmd_check() -> int:
         print(json.dumps({
             "configured": False,
             "reason": f"{type(e).__name__}: {e}",
+            "diag": _diag_payload(_LAST_CFG),
         }))
         return 2
+
+
+def cmd_diag() -> int:
+    """Always exit 0. Reports what resolved, whether or not it works."""
+    cfg = None
+    cfg_error = None
+    try:
+        cfg = _load_cfg()
+    except Exception as e:
+        cfg_error = f"{type(e).__name__}: {e}"
+
+    payload = _diag_payload(cfg)
+    payload["cfg_error"] = cfg_error
+    payload["observed_resolved"] = _resolve_observed()
+
+    reach = None
+    if cfg is not None and cfg.enabled and (cfg.api_key or cfg.base_url):
+        try:
+            from plugins.memory.honcho.client import get_honcho_client
+            observer = (getattr(cfg, "ai_peer", None) or "hermes").strip() or "hermes"
+            observed = _resolve_observed()
+            if observed:
+                client = get_honcho_client(cfg)
+                client.peer(observer).conclusions_of(observed).list(size=1)
+                reach = "ok"
+            else:
+                reach = "skipped: no observed peer"
+        except Exception as e:
+            reach = f"{type(e).__name__}: {e}"
+    else:
+        reach = "skipped: config gate not passed"
+    payload["reachability"] = reach
+
+    print(json.dumps(payload, sort_keys=True))
+    return 0
 
 
 def cmd_write() -> int:
@@ -131,7 +284,10 @@ def cmd_write() -> int:
         }))
         return 0 if ok else 1
     except Exception as e:
-        print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        print(json.dumps({
+            "error": f"{type(e).__name__}: {e}",
+            "diag": _diag_payload(_LAST_CFG),
+        }))
         return 1
 
 
@@ -139,9 +295,13 @@ def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "check":
         return cmd_check()
+    if cmd == "diag":
+        return cmd_diag()
     if cmd == "write":
         return cmd_write()
-    print(json.dumps({"error": "usage: route_behavioral_to_honcho.py check|write"}))
+    print(json.dumps({
+        "error": "usage: route_behavioral_to_honcho.py check|diag|write"
+    }))
     return 1
 
 
