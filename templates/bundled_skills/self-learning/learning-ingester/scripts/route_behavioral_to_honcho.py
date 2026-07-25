@@ -8,17 +8,31 @@ after the agent, finding no concrete write path, wrongly reported
 "HONCHO_API_KEY is not present in this environment" while the key sat in the
 gateway env the whole time. One command, one truth.
 
-Instrumented 2026-07-25. The original _connect() collapsed two distinct
-failure conditions into one message:
+Root cause, confirmed 2026-07-25. The agent's terminal tool spawns
+subprocesses with a SCRUBBED environment. Running `diag` from the gateway vs
+over SSH proves it:
 
-    if not cfg.enabled or not (cfg.api_key or cfg.base_url):
-        raise RuntimeError("Honcho config chain resolved no API key or base URL ...")
+    gateway: HONCHO_API_KEY unset, TELEGRAM_ALLOWED_USERS unset,
+             HOME=/data/.hermes/home, cwd=/tmp, _HERMES_GATEWAY=1
+    ssh:     HONCHO_API_KEY len 71, TELEGRAM_ALLOWED_USERS len 10,
+             HOME=/data, cwd=/
 
-A disabled provider therefore reported itself as a missing credential, which
-sent two days of cron failures (Garry 07-23 06:01, 07-23 10:00, 07-25 10:01;
-Bailey 07-25 10:00) to the wrong layer. The plugin's own CLI already gets this
-right (plugins/memory/honcho/cli.py:1065). This script now does too, and
-attaches a "diag" object showing exactly what the config chain resolved.
+honcho.json carries enabled/workspace/aiPeer/peerName but no credential, and
+base_url is null, so in the gateway the config chain resolved api_key empty
+and every cron behavioral route failed (Garry 07-23 06:01, 07-23 10:00,
+07-25 10:01; Bailey 07-25 10:00). The 07-16 note above is therefore wrong:
+that agent was correct about its own environment, and the script written to
+end that class of error inherited the same dependency.
+
+Two fixes. The credential now comes from honcho.json, seeded there on every
+boot by start.sh, which the plugin reads BEFORE the environment. The observed
+peer now falls back to the pinned peerName in the same file, because
+TELEGRAM_ALLOWED_USERS is scrubbed too and would have failed one check later.
+
+The original _connect() also collapsed two distinct failure conditions into
+one message, so a disabled provider reported itself as a missing credential.
+The plugin's own CLI gets this right (plugins/memory/honcho/cli.py:1065).
+This script now does too, and attaches a "diag" object on every failure.
 
 No secret values are ever printed. Keys are reported as presence and length.
 
@@ -138,6 +152,7 @@ def _diag_payload(cfg=None) -> dict:
             "base_url": getattr(cfg, "base_url", None),
             "workspace_id": getattr(cfg, "workspace_id", None),
             "ai_peer": getattr(cfg, "ai_peer", None),
+            "peer_name": getattr(cfg, "peer_name", None),
         }
     else:
         payload["cfg"] = None
@@ -154,7 +169,15 @@ def _load_cfg():
     return cfg
 
 
-def _resolve_observed() -> str | None:
+def _resolve_observed(cfg=None) -> str | None:
+    """Resolve Matt's runtime peer.
+
+    Order: GARRY_OPERATOR_PEER_ID -> TELEGRAM_ALLOWED_USERS -> honcho.json
+    peerName. The third source exists because the agent's terminal tool
+    scrubs the environment (proven 2026-07-25: both env vars absent in the
+    gateway context, present over SSH), which left this returning None and
+    failing one check later than the credential did.
+    """
     explicit = os.environ.get("GARRY_OPERATOR_PEER_ID", "").strip()
     if explicit:
         return explicit
@@ -163,6 +186,9 @@ def _resolve_observed() -> str | None:
         first = re.split(r"[,\s]+", allowed)[0].strip()
         if first:
             return first
+    pinned = (getattr(cfg, "peer_name", None) or "").strip() if cfg else ""
+    if pinned:
+        return pinned
     return None
 
 
@@ -185,7 +211,7 @@ def _connect():
             "nor a base URL. See diag."
         )
 
-    observed = _resolve_observed()
+    observed = _resolve_observed(cfg)
     if not observed:
         raise RuntimeError(
             "No observed peer: set GARRY_OPERATOR_PEER_ID or "
@@ -228,14 +254,14 @@ def cmd_diag() -> int:
 
     payload = _diag_payload(cfg)
     payload["cfg_error"] = cfg_error
-    payload["observed_resolved"] = _resolve_observed()
+    payload["observed_resolved"] = _resolve_observed(cfg)
 
     reach = None
     if cfg is not None and cfg.enabled and (cfg.api_key or cfg.base_url):
         try:
             from plugins.memory.honcho.client import get_honcho_client
             observer = (getattr(cfg, "ai_peer", None) or "hermes").strip() or "hermes"
-            observed = _resolve_observed()
+            observed = _resolve_observed(cfg)
             if observed:
                 client = get_honcho_client(cfg)
                 client.peer(observer).conclusions_of(observed).list(size=1)

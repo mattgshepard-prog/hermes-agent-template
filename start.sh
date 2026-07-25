@@ -298,4 +298,57 @@ fi
 # gets them automatically. Failure-tolerant: never blocks gateway boot.
 python /app/boot/seed_cron_jobs.py || echo "[start.sh] WARNING: cron job seed failed; continuing boot."
 
+# -- Seed Honcho apiKey into honcho.json (every boot) -----------------------
+# Root cause (confirmed 2026-07-25 on Garry CoS and Bailey): the agent's
+# terminal tool spawns subprocesses with a SCRUBBED environment. Running the
+# ingester's own diag from the gateway vs over SSH proves it:
+#   gateway: HONCHO_API_KEY unset, TELEGRAM_ALLOWED_USERS unset,
+#            HOME=/data/.hermes/home, cwd=/tmp, _HERMES_GATEWAY=1
+#   ssh:     HONCHO_API_KEY len 71, TELEGRAM_ALLOWED_USERS len 10, HOME=/data
+# honcho.json carries enabled/workspace/aiPeer/peerName but NO credential, and
+# there is no baseUrl, so the plugin's config chain resolved api_key empty and
+# every cron behavioral route failed with "no API key or base URL"
+# (Garry 07-23 06:01, 07-23 10:00, 07-25 10:01; Bailey 07-25 10:00).
+#
+# Fix: write the key into honcho.json, which the plugin reads BEFORE the
+# environment. Schema per plugins/memory/honcho/client.py at v2026.6.19:
+#   api_key = host_block.get("apiKey") or raw.get("apiKey")
+#             or os.environ.get("HONCHO_API_KEY")
+# Written at ROOT level so it serves every host block without guessing the
+# host name, and never overrides a host-specific apiKey if one is ever set.
+#
+# Rewritten on EVERY boot from HONCHO_API_KEY so the Railway variable stays the
+# single source of truth for rotation. All other fields are preserved. Only
+# touches an EXISTING honcho.json, so it can never create a stub file that
+# would permanently block the peer-pin seed above.
+# HERMES_SKIP_HONCHO_KEY_SEED=1 opts out. Never blocks gateway boot.
+if [ "${HERMES_SKIP_HONCHO_KEY_SEED:-0}" != "1" ] && [ -n "${HONCHO_API_KEY:-}" ] \
+   && [ -f /data/.hermes/honcho.json ]; then
+  if python - <<'PYEOF3' >/dev/null 2>&1
+import json, os
+path = "/data/.hermes/honcho.json"
+key = os.environ.get("HONCHO_API_KEY", "").strip()
+if not key:
+    raise SystemExit(1)
+with open(path, encoding="utf-8") as f:
+    data = json.load(f) or {}
+if not isinstance(data, dict):
+    raise SystemExit(1)
+if data.get("apiKey") != key:
+    data["apiKey"] = key
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+PYEOF3
+  then
+    echo "[start.sh] Honcho apiKey present in honcho.json (config chain is now env-independent)."
+  else
+    echo "[start.sh] WARNING: honcho.json apiKey seed failed; continuing boot."
+  fi
+else
+  echo "[start.sh] Honcho apiKey seed skipped (disabled, no HONCHO_API_KEY, or no honcho.json)."
+fi
+
 exec python /app/server.py
