@@ -42,6 +42,7 @@ Usage:
   ingest_learning_log.py set-status PAGE_ID STATUS   # pending|ingested|rejected|needs-approval
                                                      # 'ingested' also stamps Ingested = today (UTC)
   ingest_learning_log.py stamp-ingested PAGE_ID      # legacy; set-status ingested already does this
+  ingest_learning_log.py count-waiting               # standing total of needs-approval rows
   ingest_learning_log.py get-skill PAGE_ID           # fetch one Skill Registry page's governance fields
   ingest_learning_log.py find-skill "Skill Name"     # resolve a skill name to its page id
 """
@@ -173,6 +174,30 @@ def stamp_ingested(page_id):
     print(json.dumps({"ok": True, "page_id": page_id, "ingested": today}))
 
 
+def count_waiting():
+    """Standing total of rows sitting at needs-approval.
+
+    The digest states this every run, so a quiet day is visibly
+    different from a day with a large backlog parked on the operator.
+    """
+    ds = _env("NOTION_LEARNING_LOG_DS")
+    url = f"{API}/data_sources/{ds}/query"
+    body = {
+        "filter": {"property": "Status",
+                   "select": {"equals": "needs-approval"}},
+        "page_size": 100,
+    }
+    total = 0
+    while True:
+        resp = _request("POST", url, body)
+        total += len(resp.get("results", []))
+        if resp.get("has_more") and resp.get("next_cursor"):
+            body["start_cursor"] = resp["next_cursor"]
+        else:
+            break
+    print(json.dumps({"waiting": total}))
+
+
 def get_skill(page_id):
     """Fetch one Skill Registry page's governance fields, so the ingester can
     honor the per-skill fence (Self Revision, Blast Radius)."""
@@ -220,6 +245,8 @@ def main():
         if len(args) < 2:
             _fail("Usage: stamp-ingested PAGE_ID")
         stamp_ingested(args[1])
+    elif cmd == "count-waiting":
+        count_waiting()
     elif cmd == "get-skill":
         if len(args) < 2:
             _fail("Usage: get-skill PAGE_ID")
