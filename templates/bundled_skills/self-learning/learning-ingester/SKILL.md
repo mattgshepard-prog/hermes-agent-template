@@ -1,7 +1,7 @@
 ---
 name: learning-ingester
 description: "The assistant's self-learning ingester, runnable two ways: the nightly cron, or on demand when the operator says 'go learn' on Telegram. Reads pending rows from the Notion Learning Log, applies tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), routes behavioral lessons to Honcho, sets each row's status, and reports what was ingested, flagged for approval, or rejected. Cron runs email the operator a digest; manual runs reply in the chat."
-version: 2.6.0
+version: 2.7.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -84,8 +84,21 @@ If any invocation below is refused by the command scanner, do NOT rewrite the co
 3. Run `ingest_learning_log.py set-status PAGE_ID ingested` ONLY for rows whose `row_id` appears in the script output with a non-null `conclusion_id`. That single call sets the status and stamps `Ingested` together, so a row can never be marked ingested without a date. Any row not confirmed stays `needs-approval` with the script's error quoted in the digest, so the lesson is not silently lost.
 
 ### tool-specific lessons
-These target one skill via the `Target Skill` relation. Resolve the relation to the Skill Registry page and read its `Self Revision` and `Blast Radius` with:
+These target one skill via the `Target Skill` relation. Resolve the relation to the Skill Registry page and read its `Self Revision`, `Blast Radius`, `Skill Name`, and `Surface` with:
 `ingest_learning_log.py get-skill TARGET_PAGE_ID`
+
+#### First: is it already implemented?
+
+Before applying the fence, check whether the skill already does what the lesson asks. Skills get fixed by hand, and a hand fix does not touch Notion, so the row survives the work it describes. About half of a 44-row backlog on 2026-07-26 was in this state.
+
+Read the target skill with `skill_view SKILL_NAME`. Then:
+
+- **Already implemented**: set `Status = ingested` with `set-status`. Report it in the digest under **Already implemented**, WITH the quoted line. Do not edit the skill; there is nothing to change.
+- **Not implemented**: continue to the fence table below.
+
+**HARD GUARD, no exceptions.** You may only close a row as already implemented if you can quote the specific line from the skill that implements it, verbatim, in the digest. If you cannot find and quote that line, it is NOT implemented, regardless of how strongly the skill seems to cover the idea. A wrong close silently destroys a lesson, which is worse than leaving it queued. When the quote is arguable, queue it.
+
+**Only verify what you can actually read.** `get-skill` returns `Surface`. If `Surface = claude`, the skill lives on the Claude surface and is not readable from here. Never claim already-implemented for a skill you could not open. Fall through to the fence table.
 
 Then apply this table:
 
@@ -98,8 +111,24 @@ Then apply this table:
 
 **Blast Radius is a hard brake regardless of Self Revision.** If the target skill's `Blast Radius = high` (money, client sends, courts, deploys), never auto-apply even at score 70+ with Self Revision auto. Set `Status = needs-approval`. High blast radius always gets human eyes. This protects the skills where a bad edit has real-world cost.
 
+### Dedupe within the run
+
+You see every pending row at once. Use that.
+
+Before applying anything, group pending rows by `Target Skill`. Within each group, look for two rows that cannot both be true: one says use a mechanism, another says never use it; one sets a value, another sets a different one for the same thing.
+
+On a contradiction, **apply neither**. Set both to `needs-approval` and surface them in the digest as a pair, side by side, with their dates and scores, under the reason `conflict`. Do not silently prefer the higher score or the newer row. The operator decides which survives, because the later lesson is usually a deliberate reversal of the earlier one and only they know which design they kept.
+
+Observed 2026-07-26: three rows from 07-24 were reversed by 07-25 lessons on the same skill. Both halves were logged, neither was flagged, and all six sat in the queue for two days.
+
 ### unsorted bucket
 The writer left the bucket undetermined. Do not guess. Set `Status = needs-approval` and note "bucket unsorted, needs classification."
+
+### A changelog entry is not a lesson
+
+A lesson is a rule that changes what happens next time. A changelog entry records what already happened: "label collision fixed, skill now uses X", "the 7/24 runs correctly fell back to cal.com". There is nothing to apply, so it can never close by being applied, and it accumulates.
+
+Set `Status = rejected` and note in the digest: "changelog entry, not a rule." If the underlying behavior IS worth a rule, the writer should have written it as one, and the rejection is the signal to do that.
 
 ### When unsure
 Treat as `needs-approval`, never `ingested`. Ambiguity flags.
@@ -138,7 +167,8 @@ That total goes in every digest, including zero-change runs. A quiet day and a d
 - One-line summary: `N ingested, M waiting on you, K rejected.`
 - **Ingested** (if any): for each, `skill-name vX.Y.Z -- one-line description`. the operator's 24-hour visibility on every auto-edit. Behavioral ingests list as `honcho -- lesson first words -- conclusion_id`.
 - **Waiting on you** (if any needs-approval): for each, `reason (score, target) -- proposed change -- [row link]`. Group by reason: propose-only, locked, high blast radius, score 40-69, unsorted, no target, conflict.
-- **Rejected**: count only.
+- **Already implemented** (if any): for each, `skill-name -- lesson first words -- "quoted line from the skill"`. The quote is mandatory; a row listed here without one is a defect.
+- **Rejected**: count only, except `conflict` pairs and changelog entries, which list with a one-line reason.
 - **Standing backlog**: always, on every run: `N rows waiting on you in total.` Use the `count-waiting` number, not this run's count.
 - If nothing new: `No pending lessons today. Running on the current skill library.` Still state the standing backlog line.
 
@@ -182,5 +212,6 @@ v2.1.0 -- add on-demand Telegram trigger (go learn, learn now, run the ingester,
 v2.2.0 -- behavioral routing made concrete: new scripts/route_behavioral_to_honcho.py is the only check and write path (Honcho conclusions, observer assistant peer, observed operator peer); agent forbidden from inferring Honcho availability from env inspection; ingested requires a conclusion_id from script output; fence unchanged -- 2026-07-16
 v2.3.0 -- operator-neutral wording for Bot Builder client baseline; logic, fence, and scripts unchanged -- 2026-07-19
 v2.4.0 -- Honcho write now uses `write --file PATH` instead of piping stdin, because the pipe form is refused by the command scanner (tirith:pipe_to_interpreter) and cron runs have no approver; agent forbidden from rewriting a scanner-refused command; stdin still accepted for backward compatibility; fence unchanged -- 2026-07-26
+v2.7.0 -- stop queueing rows that are already done. Before applying the fence, the ingester now reads the target skill and closes the row if the lesson is already implemented, but ONLY when it can quote the implementing line verbatim, because a wrong close silently destroys a lesson. Skills on the claude surface are not readable from here and are never closed this way. Adds a dedupe pass that surfaces contradicting rows on the same skill as a pair and applies neither. Adds rejection for changelog entries, which record what happened rather than changing what happens next and therefore can never close by being applied. Root cause: a 44-row backlog on 2026-07-26 where roughly half was already implemented, four were superseded reversals, and several were changelog entries. Fence unchanged -- 2026-07-26
 v2.5.0 -- `set-status PAGE_ID ingested` now writes Status and the `Ingested` date in one Notion PATCH, so a row cannot be marked ingested with a blank date when the agent completes the first call and skips the second (observed 2026-07-26); stamp-ingested kept as legacy; fence unchanged -- 2026-07-26
 v2.6.0 -- the digest now actually reaches the operator. New scripts/send_digest.py sends it over SMTP as an explicit step, because the cron scheduler cannot deliver to email (only platforms declaring a cron_deliver_env_var get cron delivery, and the email platform declares none), so the previous "email the operator" instruction was never reachable. `[SILENT]` is now forbidden while anything is waiting, since the scheduler skips delivery on it and two consecutive runs reported nothing while 17 rows sat unapproved. Every digest now states the standing needs-approval total via the new count-waiting command, so a quiet day cannot look like a day with a large backlog. Credentials are read from .env not os.environ, because the terminal tool scrubs subprocess env. Fence unchanged -- 2026-07-26
