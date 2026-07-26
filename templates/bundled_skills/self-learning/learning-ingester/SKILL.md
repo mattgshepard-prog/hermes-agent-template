@@ -1,7 +1,7 @@
 ---
 name: learning-ingester
 description: "The assistant's self-learning ingester, runnable two ways: the nightly cron, or on demand when the operator says 'go learn' on Telegram. Reads pending rows from the Notion Learning Log, applies tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), routes behavioral lessons to Honcho, sets each row's status, and reports what was ingested, flagged for approval, or rejected. Cron runs email the operator a digest; manual runs reply in the chat."
-version: 2.5.0
+version: 2.6.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -49,8 +49,9 @@ Do not confuse this with `log-this-now`. That skill captures a NEW lesson from t
 
 - Pre-pass script: `scripts/ingest_learning_log.py` (queries pending rows; helpers for status, ingested-stamp, skill lookup)
 - Honcho routing script: `scripts/route_behavioral_to_honcho.py` (the ONLY check and write path for behavioral lessons)
+- Digest sender: `scripts/send_digest.py` (the ONLY path for emailing the digest; the cron scheduler cannot deliver to email)
 - Notion access: the script's own HTTP calls, or the `notion` skill
-- Cron delivery: the operator's Telegram; digest emailed to the operator
+- Cron delivery: the scheduler delivers to chat only. The digest is emailed by `send_digest.py` when a mailbox is configured, otherwise it goes to chat.
 
 ## How it runs
 
@@ -130,17 +131,36 @@ Behavioral lessons go to Honcho (above), not to MEMORY.md. Tool-specific lessons
 
 Always send, even on a zero-change run. Steady-state framing, never "I learned nothing."
 
+Before composing, get the standing backlog:
+`HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py count-waiting`
+That total goes in every digest, including zero-change runs. A quiet day and a day with 44 rows parked on the operator must not read the same.
+
 - One-line summary: `N ingested, M waiting on you, K rejected.`
 - **Ingested** (if any): for each, `skill-name vX.Y.Z -- one-line description`. the operator's 24-hour visibility on every auto-edit. Behavioral ingests list as `honcho -- lesson first words -- conclusion_id`.
 - **Waiting on you** (if any needs-approval): for each, `reason (score, target) -- proposed change -- [row link]`. Group by reason: propose-only, locked, high blast radius, score 40-69, unsorted, no target, conflict.
 - **Rejected**: count only.
-- If nothing: `No pending lessons today. Running on the current skill library.`
+- **Standing backlog**: always, on every run: `N rows waiting on you in total.` Use the `count-waiting` number, not this run's count.
+- If nothing new: `No pending lessons today. Running on the current skill library.` Still state the standing backlog line.
 
-Delivery depends on the entry point:
-- **Cron run**: email to the operator (their primary inbox). This is outbound-to-operator, a report, so it sends without an approval gate.
+Delivery depends on the entry point.
+
+The cron scheduler CANNOT deliver to email. It only delivers to chat platforms. So email, where it is available, is sent by this skill as an explicit step. Not every bot has a mailbox, and a bot without one is correctly configured, not broken.
+
+- **Cron run**: first ask whether email is available:
+  `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/send_digest.py check`
+
+  **`configured: true`** (exit 0): write the digest body to a file with `write_file`, for example `/tmp/digest.txt`, then run:
+  `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/send_digest.py send --file /tmp/digest.txt --subject "Self-Learning Digest YYYY-MM-DD"`
+  This is outbound-to-operator, a report, so it sends without an approval gate. Do NOT pipe the body in; the pipe form is refused by the command scanner.
+  On `sent: true`, end the turn with `[SILENT]` so the operator does not also get a duplicate chat message.
+  On `sent: false` or a non-zero exit, quote the `reason` verbatim and end the turn with the full digest as your final message, so the scheduler delivers it to chat instead. Never let a failed email swallow the digest.
+
+  **`configured: false`** (exit 2): this bot has no mailbox. That is a valid setup, not an error. Do NOT call `send`, do NOT quote the reason, and do NOT mention email in the digest. End the turn with the full digest as your final message and the scheduler delivers it to chat. Chat is the normal channel for these bots, not a fallback, so it must not read like a failure.
 - **Manual run**: reply in the Telegram chat, same content and format, no email.
 
 No em dashes. Short.
+
+**Never return `[SILENT]` while anything is waiting on the operator.** The scheduler skips delivery entirely on `[SILENT]`, so returning it with a non-zero backlog means the operator is told nothing at all. `[SILENT]` is permitted in exactly one case: the digest email was sent successfully and there is nothing left to say in chat.
 
 ## Hard rules (standing communication rules)
 
@@ -163,3 +183,4 @@ v2.2.0 -- behavioral routing made concrete: new scripts/route_behavioral_to_honc
 v2.3.0 -- operator-neutral wording for Bot Builder client baseline; logic, fence, and scripts unchanged -- 2026-07-19
 v2.4.0 -- Honcho write now uses `write --file PATH` instead of piping stdin, because the pipe form is refused by the command scanner (tirith:pipe_to_interpreter) and cron runs have no approver; agent forbidden from rewriting a scanner-refused command; stdin still accepted for backward compatibility; fence unchanged -- 2026-07-26
 v2.5.0 -- `set-status PAGE_ID ingested` now writes Status and the `Ingested` date in one Notion PATCH, so a row cannot be marked ingested with a blank date when the agent completes the first call and skips the second (observed 2026-07-26); stamp-ingested kept as legacy; fence unchanged -- 2026-07-26
+v2.6.0 -- the digest now actually reaches the operator. New scripts/send_digest.py sends it over SMTP as an explicit step, because the cron scheduler cannot deliver to email (only platforms declaring a cron_deliver_env_var get cron delivery, and the email platform declares none), so the previous "email the operator" instruction was never reachable. `[SILENT]` is now forbidden while anything is waiting, since the scheduler skips delivery on it and two consecutive runs reported nothing while 17 rows sat unapproved. Every digest now states the standing needs-approval total via the new count-waiting command, so a quiet day cannot look like a day with a large backlog. Credentials are read from .env not os.environ, because the terminal tool scrubs subprocess env. Fence unchanged -- 2026-07-26
