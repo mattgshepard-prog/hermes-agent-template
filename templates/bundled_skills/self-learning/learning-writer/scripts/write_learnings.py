@@ -11,12 +11,16 @@ Reconciled to the LIVE Learning Log schema (verified 2026-07-13):
   Source       (text)    session id
   Status       (select)  always "pending" on write
 
-Creates rows in the Learning Log from a JSON array on stdin. Only the
+Creates rows in the Learning Log from a JSON array read from --file PATH,
+or from stdin when --file is absent. Prefer --file: piping into the
+interpreter is refused by the command scanner. Only the
 deterministic Notion write lives here; extraction, scoring, and bucket routing
 are the agent's judgment per the skill.
 
-behavioral lessons routed to Honcho do NOT come here. This writes only rows that
-belong in the Learning Log (tool-specific edits, or unsorted needing triage).
+ALL lessons come here, including behavioral ones. The writer never talks to
+Honcho. Behavioral rows are written with Bucket = behavioral and Status =
+pending, and the learning-ingester routes them to Honcho with its own
+sanctioned script, which is the only proven Honcho write path.
 
 Env vars:
   NOTION_TOKEN (or NOTION_API_KEY)   integration token
@@ -118,9 +122,19 @@ def build_props(row):
 
 
 def main():
-    raw = sys.stdin.read().strip()
+    path = None
+    if "--file" in sys.argv:
+        i = sys.argv.index("--file")
+        if i + 1 >= len(sys.argv):
+            _fail("--file needs a path")
+        path = sys.argv[i + 1]
+    if path:
+        with open(path) as fh:
+            raw = fh.read().strip()
+    else:
+        raw = sys.stdin.read().strip()
     if not raw:
-        _fail("No input on stdin. Pipe a JSON array of learning rows.")
+        _fail("No input. Pass --file PATH or provide a JSON array on stdin.")
     try:
         rows = json.loads(raw)
     except json.JSONDecodeError as e:
