@@ -40,7 +40,8 @@ Usage:
   ingest_learning_log.py                       # print pending rows as JSON (default)
   ingest_learning_log.py list
   ingest_learning_log.py set-status PAGE_ID STATUS   # pending|ingested|rejected|needs-approval
-  ingest_learning_log.py stamp-ingested PAGE_ID      # set Ingested date = today (UTC)
+                                                     # 'ingested' also stamps Ingested = today (UTC)
+  ingest_learning_log.py stamp-ingested PAGE_ID      # legacy; set-status ingested already does this
   ingest_learning_log.py get-skill PAGE_ID           # fetch one Skill Registry page's governance fields
   ingest_learning_log.py find-skill "Skill Name"     # resolve a skill name to its page id
 """
@@ -153,9 +154,15 @@ def set_status(page_id, status):
     if status not in valid:
         _fail(f"Invalid status '{status}'. Must be one of {sorted(valid)}")
     url = f"{API}/pages/{page_id}"
-    body = {"properties": {"Status": {"select": {"name": status}}}}
-    _request("PATCH", url, body)
-    print(json.dumps({"ok": True, "page_id": page_id, "status": status}))
+    props = {"Status": {"select": {"name": status}}}
+    out = {"ok": True, "page_id": page_id, "status": status}
+    if status == "ingested":
+        today = datetime.datetime.now(
+            datetime.timezone.utc).date().isoformat()
+        props["Ingested"] = {"date": {"start": today}}
+        out["ingested"] = today
+    _request("PATCH", url, {"properties": props})
+    print(json.dumps(out))
 
 
 def stamp_ingested(page_id):
