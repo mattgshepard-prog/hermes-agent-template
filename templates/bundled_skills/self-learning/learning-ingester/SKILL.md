@@ -1,7 +1,7 @@
 ---
 name: learning-ingester
 description: "The assistant's self-learning ingester, runnable two ways: the nightly cron, or on demand when the operator says 'go learn' on Telegram. Reads pending rows from the Notion Learning Log, applies tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), routes behavioral lessons to Honcho, sets each row's status, and reports what was ingested, flagged for approval, or rejected. Cron runs email the operator a digest; manual runs reply in the chat."
-version: 2.3.0
+version: 2.4.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -71,11 +71,14 @@ Route to Honcho as a conclusion (a specific, falsifiable observation about how t
 
 The routing script is the single source of truth for whether Honcho is configured AND for the write itself. Do not inspect environment variables to decide whether Honcho is available, do not reason about config.yaml, and do not improvise another route through memory tools. Run the script; believe its output; quote its output.
 
+If any invocation below is refused by the command scanner, do NOT rewrite the command to get around the refusal. Report the refusal verbatim in the digest and leave the affected rows at `needs-approval`. Routing around a security control is never the correct recovery.
+
 1. Check availability:
    `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/route_behavioral_to_honcho.py check`
    Exit 0 with `"configured": true` means Honcho is live. Anything else means it is not; the digest must quote the script's `reason` field verbatim, never a guessed explanation.
-2. Write all behavioral rows in one call. Pipe a JSON array of `{"content": lesson text, "row_id": page_id}` to:
-   `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/route_behavioral_to_honcho.py write`
+2. Write all behavioral rows in one call. First write the JSON array of `{"content": lesson text, "row_id": page_id}` to a file using the `write_file` tool, for example `/tmp/behavioral_lessons.json`. Then run:
+   `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/route_behavioral_to_honcho.py write --file /tmp/behavioral_lessons.json`
+   Do NOT pipe the JSON into the script. `echo ... | python ...` is refused by the command scanner as a pipe to an interpreter, and on a cron run there is no operator present to approve it.
    The script writes each lesson as a Honcho conclusion (observer: the assistant's peer, observed: the operator's peer) and prints JSON with a `conclusion_id` per `row_id`.
 3. Set `Status = ingested` and stamp `Ingested` ONLY for rows whose `row_id` appears in the script output with a non-null `conclusion_id`. Any row not confirmed stays `needs-approval` with the script's error quoted in the digest, so the lesson is not silently lost.
 
@@ -158,3 +161,4 @@ If the query returns zero pending rows for several nights, that may mean the wri
 v2.1.0 -- add on-demand Telegram trigger (go learn, learn now, run the ingester, ingest your lessons) with in-chat report delivery on manual runs; fence unchanged -- 2026-07-13
 v2.2.0 -- behavioral routing made concrete: new scripts/route_behavioral_to_honcho.py is the only check and write path (Honcho conclusions, observer assistant peer, observed operator peer); agent forbidden from inferring Honcho availability from env inspection; ingested requires a conclusion_id from script output; fence unchanged -- 2026-07-16
 v2.3.0 -- operator-neutral wording for Bot Builder client baseline; logic, fence, and scripts unchanged -- 2026-07-19
+v2.4.0 -- Honcho write now uses `write --file PATH` instead of piping stdin, because the pipe form is refused by the command scanner (tirith:pipe_to_interpreter) and cron runs have no approver; agent forbidden from rewriting a scanner-refused command; stdin still accepted for backward compatibility; fence unchanged -- 2026-07-26

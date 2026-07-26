@@ -59,7 +59,10 @@ Commands:
   diag    Print the full resolution picture and exit 0 regardless of state.
           Use this to compare contexts (gateway vs shell vs cron) without
           needing a failure to be in progress.
-  write   Read a JSON array from stdin: [{"content": str, "row_id": str}].
+  write   Read a JSON array of [{"content": str, "row_id": str}] from the
+          path given by --file PATH, or from stdin when --file is absent.
+          Prefer --file. Piping into the interpreter is refused by the
+          command scanner and no one is present to approve it on a cron run.
           Write each as a conclusion in one batch. Print JSON:
           {"written": N, "results": [{"row_id", "conclusion_id"}, ...],
            "workspace", "observer", "observed"}.
@@ -278,11 +281,15 @@ def cmd_diag() -> int:
     return 0
 
 
-def cmd_write() -> int:
+def cmd_write(path=None) -> int:
     try:
-        rows = json.load(sys.stdin)
+        if path:
+            with open(path) as fh:
+                rows = json.load(fh)
+        else:
+            rows = json.load(sys.stdin)
         if not isinstance(rows, list) or not rows:
-            print(json.dumps({"error": "stdin must be a non-empty JSON array"}))
+            print(json.dumps({"error": "input must be a non-empty JSON array"}))
             return 1
         for r in rows:
             if not isinstance(r, dict) or not str(r.get("content", "")).strip():
@@ -324,9 +331,16 @@ def main() -> int:
     if cmd == "diag":
         return cmd_diag()
     if cmd == "write":
-        return cmd_write()
+        path = None
+        if "--file" in sys.argv:
+            i = sys.argv.index("--file")
+            if i + 1 >= len(sys.argv):
+                print(json.dumps({"error": "--file needs a path"}))
+                return 1
+            path = sys.argv[i + 1]
+        return cmd_write(path)
     print(json.dumps({
-        "error": "usage: route_behavioral_to_honcho.py check|diag|write"
+        "error": "usage: route_behavioral_to_honcho.py check|diag|write [--file PATH]"
     }))
     return 1
 
