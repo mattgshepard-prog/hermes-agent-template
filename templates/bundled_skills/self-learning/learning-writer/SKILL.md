@@ -1,7 +1,7 @@
 ---
 name: learning-writer
 description: "Nightly self-learning sweep: read the day's session transcripts, extract and score lessons 0-100, and route by bucket. Every lesson becomes a pending row in the Notion Learning Log, tool-specific ones linked to the target skill in the Skill Registry. The ingester processes them and is the only component that writes to Honcho."
-version: 2.2.0
+version: 2.3.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -44,6 +44,46 @@ Runs primarily on the Cowork surface (where the day's transcripts live). Hermes 
 
 If nothing is worth recording, write nothing and exit. An empty day is fine.
 
+## Version boundaries (check before calling anything a violation)
+
+A skill on this stack can change more than once in a day. Two runs hours apart
+may have loaded different versions of the same SKILL.md. Behavior that changes
+across an update is a **version boundary, not a defect**. Do not read it as a
+failure followed by a correction.
+
+Before you log that a skill misbehaved, violated a rule, ignored an
+instruction, or regressed, establish that the rule existed at the moment of
+that run.
+
+**The check.** A cron output file embeds the full SKILL.md that was loaded for
+that run, so the run carries its own evidence. Search the run's output for a
+distinctive phrase from the rule:
+
+`grep -c "DISTINCTIVE_PHRASE" /data/.hermes/cron/output/JOB_ID/TIMESTAMP.md`
+
+Zero hits means the rule was not loaded for that run. If an earlier run shows
+zero and a later run shows hits, the update landed between them and there is no
+defect to log.
+
+`stat -c '%y' PATH/SKILL.md` gives the last write time, but only for the
+version currently on disk, so it cannot date an earlier run. Prefer the
+embedded-skill check above.
+
+**What to do with the result.**
+
+- Rule existed at run time and was broken: log it normally.
+- Rule postdates the run: do not log a violation. Either drop it, or log it as
+  a version boundary noting when the rule arrived. Never score it as a
+  correction.
+- Cannot determine which version was loaded: do not assert a violation. Log it
+  `unsorted` at 69 or below and say in `Rationale` that the version could not be
+  established.
+
+**Never build a violated-then-corrected pair from two runs** without first
+confirming both loaded the same version. That pattern is the exact shape a
+version bump produces, and it scores high precisely because it looks like clean
+observed evidence.
+
 ## Scoring (0-100)
 
 - Hard explicit correction from the operator: near 100.
@@ -79,9 +119,12 @@ Row shape: `lesson`, `score`, `bucket`, `target_skill_id` (for tool-specific), `
 - Every lesson is a Learning Log row, behavioral included. This skill never writes to Honcho; the ingester does.
 - Prefer `unsorted` over a wrong `Target Skill`.
 - Score conservatively. When unsure, 69.
+- Never call an observed behavior a violation without confirming the rule
+  existed at run time. See Version boundaries.
 - No em dashes in any text.
 
 ## Changelog
 
 v2.1.0 -- operator-neutral wording for Bot Builder client baseline; logic and fence unchanged -- 2026-07-19
 v2.2.0 -- behavioral lessons now become `pending` Learning Log rows instead of direct Honcho writes, because the documented Honcho MCP path does not exist on this surface and both bots improvised around it (Bailey dumped to unsorted 2026-07-24; Garry wrote behavioral rows against its own rule, which is the only reason any conclusion exists). The ingester is now the single Honcho writer. write_learnings.py takes `--file PATH` because the piped form is refused by the command scanner. Step 1 names session_search as the Hermes transcript path. Scoring and bucketing unchanged -- 2026-07-26
+v2.3.0 -- stop manufacturing violations out of version bumps. The writer now verifies that a rule existed at run time before calling any observed behavior a violation, using the SKILL.md embedded in that run's own cron output rather than the file currently on disk. A violated-then-corrected pair across two runs is forbidden unless both runs are confirmed to have loaded the same version. Root cause: on 2026-07-26 the writer logged a score-85 lesson accusing the ingester of violating a v2.6.0 [SILENT] rule at 21:10; the 21:11 cron output contains zero references to that rule and the 22:24 output contains seven, so the guard landed between the runs and no defect ever existed. Scoring, bucketing, and the Honcho boundary unchanged -- 2026-07-27
