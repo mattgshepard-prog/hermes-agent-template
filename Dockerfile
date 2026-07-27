@@ -21,11 +21,20 @@ ARG HERMES_REF=v2026.6.19
 #
 # Node.js is required only at build time to compile the Hermes React dashboard.
 # We strip the source + apt lists afterwards to keep the image lean.
+# NOTE: curl is downloaded to a FILE, not piped into bash. In /bin/sh the
+# exit status of `curl ... | bash -` is bash's, not curl's, so a failed
+# NodeSource fetch exits 0, the && chain continues, and apt silently resolves
+# `nodejs` from Debian instead. Debian only RECOMMENDS npm, so
+# --no-install-recommends drops it and the build dies ~100 lines later at the
+# next step with "npm: not found". The explicit node/npm version assertions
+# below turn that into an immediate, legible failure at the real cause.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates git tini && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh && \
+    bash /tmp/nodesource_setup.sh && \
     apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/*
+    node --version && npm --version && \
+    rm -rf /var/lib/apt/lists/* /tmp/nodesource_setup.sh
 
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
