@@ -1,3 +1,12 @@
+# Node stage. node/npm are COPIED from the official image rather than
+# installed from NodeSource at build time. NodeSource began returning HTTP 403
+# to Railway's builders on 2026-07-27, which blocked every client build and
+# would block any Garry or Bailey rebuild too. A multi-stage COPY has no
+# network fetch that can fail, so builds stop depending on a third party being
+# reachable. bookworm-slim on both sides keeps glibc compatible with the uv
+# base below.
+FROM node:22-bookworm-slim AS nodesrc
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 # Which hermes-agent revision to install. Accepts any git ref the upstream
@@ -21,20 +30,24 @@ ARG HERMES_REF=v2026.6.19
 #
 # Node.js is required only at build time to compile the Hermes React dashboard.
 # We strip the source + apt lists afterwards to keep the image lean.
-# NOTE: curl is downloaded to a FILE, not piped into bash. In /bin/sh the
-# exit status of `curl ... | bash -` is bash's, not curl's, so a failed
-# NodeSource fetch exits 0, the && chain continues, and apt silently resolves
-# `nodejs` from Debian instead. Debian only RECOMMENDS npm, so
-# --no-install-recommends drops it and the build dies ~100 lines later at the
-# next step with "npm: not found". The explicit node/npm version assertions
-# below turn that into an immediate, legible failure at the real cause.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates git tini && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh && \
-    bash /tmp/nodesource_setup.sh && \
-    apt-get install -y --no-install-recommends nodejs && \
-    node --version && npm --version && \
-    rm -rf /var/lib/apt/lists/* /tmp/nodesource_setup.sh
+    rm -rf /var/lib/apt/lists/*
+
+# node + npm + npx from the node stage above. No installer script is fetched,
+# so the HTTP 403 that blocked builds on 2026-07-27 has no surface here, and
+# the old piped-curl exit-status trap stops being possible rather than merely
+# being reported better.
+#
+# These land in the FINAL image deliberately. The previous Dockerfile also
+# left node/npm present at runtime (step 3 strips only /root/.npm and the web
+# source), and stdio MCP servers spawned via npx need them. Dropping them here
+# would slim the image and break tool spawning later.
+COPY --from=nodesrc /usr/local/bin/node /usr/local/bin/node
+COPY --from=nodesrc /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    node --version && npm --version && npx --version
 
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
