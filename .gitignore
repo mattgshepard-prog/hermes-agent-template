@@ -14,3 +14,12 @@ ref-openai-auth/
 OVERVIEW.md
 hermes-git/
 for-me.md
+
+# Local working artifacts. Added 2026-07-27.
+# Patch backups written by patch-and-deploy scripts. Keep on disk, never commit.
+*.bak
+*.bak-*
+# Ad hoc model and provider probes.
+_modeltest.*
+# Local scratch space.
+scratch/
