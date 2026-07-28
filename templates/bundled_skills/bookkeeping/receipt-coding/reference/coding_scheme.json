@@ -1,7 +1,7 @@
 {
   "scheme_id": "schedule-c-2025-default",
   "display_name": "Schedule C (Sole Proprietor) Default",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "source": "IRS Schedule C (Form 1040) 2025, verified against https://www.irs.gov/pub/irs-pdf/f1040sc.pdf on 2026-07-28",
   "entity_type": "sole_proprietor_or_smllc",
   "notes": "This is a REFERENCE scheme, not a client chart of accounts. Swap this file to code against any client's own COA. Only 'account', 'auto_assign' and 'confidence_floor' are required per entry; every other field is optional and used only to improve suggestions.",
@@ -529,8 +529,8 @@
     }
   ],
   "counting": {
-    "rule": "Do not count by reading this file. Run the command below and quote its output. If it does not run, say the count could not be verified and give no number.",
-    "command": "python3 /data/.hermes/skills/bookkeeping/receipt-coding/scripts/build_approval_sheet.py --scheme-info"
+    "rule": "Never compute a count. Read reference/scheme_info.txt, which is regenerated from this file on every boot, and quote it. If that file is missing, say the count could not be verified and give no number.",
+    "file": "/data/.hermes/skills/bookkeeping/receipt-coding/reference/scheme_info.txt"
   },
   "enforcement": "Scheme consistency is enforced by the renderer's validation pass, not by trust. Rows that contradict this file are corrected before the sheet is written."
 }

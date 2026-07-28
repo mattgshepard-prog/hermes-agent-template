@@ -1,12 +1,12 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.3.0
+version: 1.4.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
-  files: [reference/coding_scheme.json]
+  files: [reference/coding_scheme.json, reference/scheme_info.txt]
 triggers:
   - an inbound email carries receipt or invoice attachments
   - user sends a photo or PDF of a receipt
@@ -32,15 +32,17 @@ Load `reference/coding_scheme.json` at the start of every batch. It is data, not
 
 **Only ever suggest an account name that appears in that file.** Never invent one, never abbreviate one, never merge two. If nothing fits, use a fallback account and say why in the review reason.
 
-**Any question about what the scheme contains is answered by running it, not by reading and estimating:**
+**Any question about what the scheme contains is answered by READING one file. Nothing needs to be run or computed:**
 
-    python3 /data/.hermes/skills/bookkeeping/receipt-coding/scripts/build_approval_sheet.py --scheme-info
+    /data/.hermes/skills/bookkeeping/receipt-coding/reference/scheme_info.txt
 
-That prints the scheme name, source, version, the account count, how many are assignable, and the fallback count. Quote those numbers verbatim.
+It holds the scheme name, source, version, the account count, how many are assignable, how many are not, and the fallback names. Read it and quote the numbers verbatim.
 
-Do not produce a count any other way. Do not `cat` the file into `python3 -c`, do not count by reading, and do not explain how a number was reached after stating it.
+That file is regenerated from `coding_scheme.json` on every boot, so it always matches the scheme actually loaded, including a client's own chart of accounts.
 
-**If that command does not run, for any reason, say the count could not be verified and give no number.** A blocked or failed check is not permission to fall back on an impression. This has produced a wrong count three times.
+**Never compute a count.** Do not open `coding_scheme.json` and count entries. Do not write inline Python, a heredoc, a `-c` flag, or `execute_code` to total anything. Every one of those trips a command-approval gate, which emails the client a warning they cannot act on and should never see. There is nothing to compute: the answer is already in the file above.
+
+If that file is missing or unreadable, say the count could not be verified and give no number.
 
 Entries with `auto_assign: false` must never be suggested from a receipt. They exist so the scheme matches the real form, not so the bot can route to them.
 
@@ -88,13 +90,17 @@ The renderer validates every row against the scheme before writing, and corrects
 
 **Never use `execute_code` for any part of this, and never feed the script through a heredoc or a `-c` flag.** All three trip a command-approval gate, and there is no user available to answer it. The `--rows-file` argument exists precisely so none of that is necessary. If you find yourself composing inline Python, stop and use the two steps above.
 
-**Step 5 - Reply.** Outbound email from this gateway is **plain text only**. There is no HTML alternative on any send path. Markdown tables, bold, and headers do not render, they arrive as literal pipes and asterisks.
+**Step 5 - Reply. ONE message, not two.**
 
-So: **never put a table in the body.** The sheet is the attachment, the body is prose.
+Send the sheet as an attachment **with the entire summary as its caption**. The caption becomes the email body, so the recipient gets prose and attachment in a single email. Make exactly one send call.
 
-Body contains: how many receipts were read, how many coded cleanly, how many need review, and the flagged rows named with their reasons in sentences. Keep it short enough to read on a phone.
+**Do not send the summary as a separate message first and the file after.** That arrives as two emails and reads as though the assistant lost its place.
 
-If the sheet cannot be attached, say the attachment failed and offer to resend. Do not fall back to a table in the body, and do not go silent.
+Outbound email here is **plain text only**. There is no HTML alternative on any send path, so markdown tables, bold, and headers arrive as literal pipes and asterisks. Never put a table in the body. The sheet is the attachment, the caption is prose.
+
+The caption contains: how many receipts were read, how many coded cleanly, how many need review, and the flagged rows named with their reasons in sentences. If the renderer reported `VALIDATION:` corrections, say what was corrected. Keep it short enough to read on a phone.
+
+If the sheet cannot be attached, send one message saying the attachment failed and offer to resend. Do not fall back to a table in the body, and do not go silent.
 
 ## Column order for the sheet
 
@@ -106,7 +112,8 @@ Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last
 - Never state a total the receipt does not show. An unreadable total is unreadable.
 - Never guess a date. A missing date is a flag, not a estimate.
 - Never suggest an account outside the scheme file.
-- Never use `execute_code`, heredocs, or `python -c` in this skill. Write a file, then call the script by path.
+- Never use `execute_code`, heredocs, or `python -c` in this skill, for any purpose including counting. Write a file, then call the script by path.
+- One reply per request. The summary rides as the attachment's caption, never as a separate message.
 - Attach exactly ONE file: the single path the renderer printed. Never attach both a CSV and an XLSX, and never send attachments as separate follow-up emails. One reply, one attachment.
 - Never silently drop a receipt. Every attachment received appears as a row, even if that row is entirely flags.
 - Duplicates within a batch are flagged, not removed.
@@ -117,6 +124,8 @@ Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last
 - No em dashes.
 
 ## Changelog
+
+v1.4.0 -- counts now come from reading a pre-generated `reference/scheme_info.txt` instead of running anything, after three runs where the agent improvised inline Python rather than use the documented command and emailed the client an approval warning each time; the summary now rides as the attachment caption so prose and sheet arrive as ONE email rather than two -- 2026-07-28
 
 v1.3.0 -- absolute script path, since the previous placeholder path was unresolvable and the agent improvised a `python3 -c` pipeline that hit an approval gate; scheme consistency moved out of prose and into a validation pass in the renderer, after rule-based attempts failed twice on the same contradiction; a blocked count check must now produce no number rather than an impression -- 2026-07-28
 

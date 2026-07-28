@@ -406,4 +406,29 @@ else
   echo "[start.sh] Email display wire skipped (disabled or no config.yaml yet)."
 fi
 
+# ---------------------------------------------------------------------------
+# receipt-coding scheme info regeneration (scheme-info-v1)
+#
+# reference/scheme_info.txt holds the scheme's account counts as plain text so
+# the agent never has to COMPUTE them. Across three runs it improvised
+# execute_code, a `cat | python3 -c` pipeline, and a heredoc rather than use the
+# documented command, and each one tripped a command-approval gate that emailed
+# the client a warning they cannot act on. Reading a file trips nothing.
+#
+# Regenerated on every boot from coding_scheme.json, so it always matches the
+# scheme actually deployed -- including a client's own chart of accounts
+# swapped in after provisioning.
+#
+# Failure-tolerant: never blocks gateway boot.
+RC_SKILL=/data/.hermes/skills/bookkeeping/receipt-coding
+if [ -f "$RC_SKILL/scripts/build_approval_sheet.py" ] && [ -f "$RC_SKILL/reference/coding_scheme.json" ]; then
+  if python3 "$RC_SKILL/scripts/build_approval_sheet.py" --scheme-info --scheme "$RC_SKILL/reference/coding_scheme.json" --info-file "$RC_SKILL/reference/scheme_info.txt" >/dev/null 2>&1; then
+    echo "[start.sh] Regenerated receipt-coding scheme_info.txt from coding_scheme.json."
+  else
+    echo "[start.sh] WARNING: scheme_info.txt regeneration failed; continuing boot."
+  fi
+else
+  echo "[start.sh] receipt-coding skill not present; scheme_info regeneration skipped."
+fi
+
 exec python /app/server.py

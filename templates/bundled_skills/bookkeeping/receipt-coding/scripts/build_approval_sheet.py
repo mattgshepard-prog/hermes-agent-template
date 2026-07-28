@@ -71,25 +71,52 @@ def load_scheme(path):
     return json.load(open(path, encoding="utf-8"))
 
 
-def scheme_info(path):
-    """Print scheme identity and counts derived from the file itself."""
+def scheme_info_lines(path):
+    """Return scheme identity and counts derived from the file itself."""
     cfg = load_scheme(path)
     accounts = cfg.get("accounts", [])
     fallbacks = cfg.get("fallback_accounts", [])
     assignable = [a for a in accounts if a.get("auto_assign")]
     not_assignable = [a for a in accounts if not a.get("auto_assign")]
 
-    print("scheme_id: %s" % cfg.get("scheme_id", ""))
-    print("display_name: %s" % cfg.get("display_name", ""))
-    print("version: %s" % cfg.get("version", ""))
-    print("source: %s" % cfg.get("source", ""))
-    print("accounts: %d" % len(accounts))
-    print("  assignable_from_a_receipt: %d" % len(assignable))
-    print("  not_assignable: %d" % len(not_assignable))
-    print("fallback_accounts: %d" % len(fallbacks))
+    lines = [
+        "scheme_id: %s" % cfg.get("scheme_id", ""),
+        "display_name: %s" % cfg.get("display_name", ""),
+        "version: %s" % cfg.get("version", ""),
+        "source: %s" % cfg.get("source", ""),
+        "accounts: %d" % len(accounts),
+        "  assignable_from_a_receipt: %d" % len(assignable),
+        "  not_assignable: %d" % len(not_assignable),
+        "fallback_accounts: %d" % len(fallbacks),
+    ]
     for f in fallbacks:
-        print("  - %s" % f.get("account", ""))
-    print("total_named_accounts: %d" % (len(accounts) + len(fallbacks)))
+        lines.append("  - %s" % f.get("account", ""))
+    lines.append("total_named_accounts: %d" % (len(accounts) + len(fallbacks)))
+    return lines
+
+
+def scheme_info(path, info_file=None):
+    """Print scheme counts, and optionally write them to a file.
+
+    The file exists so nothing has to RUN to answer a count question. Across
+    three runs the agent improvised execute_code, a `cat | python3 -c`
+    pipeline, and a heredoc rather than use the documented command, and each
+    improvisation tripped a command-approval gate that emailed the client a
+    warning. A plain file read touches no approval system at all.
+    """
+    lines = scheme_info_lines(path)
+    text = "\n".join(lines) + "\n"
+    for line in lines:
+        print(line)
+    if info_file:
+        # newline="\n" pins LF on every platform. Without it Python translates
+        # to CRLF on Windows, so a committed build artifact would differ
+        # depending on which machine generated it.
+        tmp = info_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp, info_file)
+        print("wrote %s" % info_file, file=sys.stderr)
     return 0
 
 
@@ -251,12 +278,13 @@ def main():
     ap.add_argument("--scheme", default=DEFAULT_SCHEME, help="path to coding_scheme.json")
     ap.add_argument("--rows-file", help="path to a JSON array of row objects")
     ap.add_argument("--out", help="output path WITHOUT extension")
+    ap.add_argument("--info-file", help="also write --scheme-info output to this path")
     ap.add_argument("--no-validate", action="store_true", help="skip the consistency pass (testing only)")
     args = ap.parse_args()
 
     if args.scheme_info:
         try:
-            return scheme_info(args.scheme)
+            return scheme_info(args.scheme, args.info_file)
         except Exception as exc:
             print("ERROR: could not read scheme: %s" % exc, file=sys.stderr)
             return 2
