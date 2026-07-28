@@ -1,7 +1,7 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.6.0
+version: 1.6.1
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -54,7 +54,15 @@ The default scheme is the IRS Schedule C reference set. If a client's own chart 
 
 **Step 2 - Transcribe first, then extract. In that order.**
 
-Before interpreting anything, transcribe the receipt VERBATIM into `_raw_text` in the row JSON. Copy what is printed, line by line.
+**You can see the attached images yourself. Read them directly.** They arrive as attachments on the message and are visible to you the same way any image in a conversation is.
+
+- Do **not** call `vision_analyze` or any other image tool. You do not need one, and on this deployment it is not configured.
+- Do **not** delegate receipt reading to a subagent. Subagents do not receive the attachments, so the work fails and looks like a missing capability.
+- Do **not** conclude you lack vision because a tool errored. Look at the image.
+
+Only a PDF needs different handling: extract its text rather than reading it as a picture.
+
+Now transcribe the receipt VERBATIM into `_raw_text` in the row JSON. Copy what is printed, line by line. This is something you do by looking, not something you call a tool to do.
 
 **Any character you cannot resolve is written as `?`. Never settle an ambiguous character into the digit it most resembles.** A smudged glyph is a `?`, not a 7. If a total reads `??.??`, the transcript says `??.??`. If a date reads `07/1?/2026`, the transcript says `07/1?/2026`.
 
@@ -141,6 +149,8 @@ The renderer independently checks line items against the assigned account and re
 - Never state a total the receipt does not show. An unreadable total is unreadable.
 - Never resolve an unclear character into a digit. Write `?`. A guessed number that looks confident is worse than a blank cell, because a blank cell asks to be checked and a number does not.
 - Always supply `_raw_text`. Without it the renderer cannot verify anything was actually read, and the row is flagged as unverified.
+- Read attached images yourself. Never reach for an image tool and never hand receipt reading to a subagent.
+- If a tool fails, say the tool failed. Do not report a missing capability you have not confirmed is missing.
 - Never guess a date. A missing date is a flag, not a estimate.
 - Never suggest an account outside the scheme file.
 - Never use `execute_code`, heredocs, or `python -c` in this skill, for any purpose including counting. Write a file, then call the script by path.
@@ -155,6 +165,8 @@ The renderer independently checks line items against the assigned account and re
 - No em dashes.
 
 ## Changelog
+
+v1.6.1 -- read attached images directly. v1.6.0's transcription wording made reading sound like a separable job, so the agent called `vision_analyze` (unconfigured on this deployment, so it threw), then delegated to subagents that never receive attachments, and reported having no vision at all. Native multimodal reading had worked correctly on the previous run -- 2026-07-28
 
 v1.6.0 -- transcribe verbatim into `_raw_text` before interpreting, preserving unreadable characters as `?`; the renderer blanks money and dates on any transcript with unreadable characters beside digits, reconciles subtotal plus tax plus tip against the stated total, and routes a total with no subtotal for verification. Built after a faded receipt reading `TOTAL ??.??` was reported as 77.77 at read confidence 85 -- 2026-07-28
 
