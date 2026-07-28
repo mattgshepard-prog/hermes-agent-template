@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Approval sheet renderer and scheme reporter for the receipt-coding skill.
+"""Approval sheet renderer, scheme reporter, and row validator.
 
 Two modes.
 
@@ -7,20 +7,31 @@ Two modes.
 
       python3 build_approval_sheet.py --scheme-info
 
-  Render a coded batch into ONE approval sheet:
+  Validate and render a coded batch into ONE approval sheet:
 
       python3 build_approval_sheet.py --rows-file /tmp/receipt_rows.json \\
                                       --out /tmp/approval_sheet
 
+WHY THIS FILE DOES THE ENFORCING
+--------------------------------
+Rules written into SKILL.md asking the agent to count accurately, or to keep
+confidence consistent with routing, did not hold across three runs. Rules
+implemented here have held every time. So the consistency guarantees live in
+code:
+
+  * an account not present in the scheme cannot reach the sheet
+  * an account marked auto_assign:false cannot be assigned from a receipt
+  * a row routed to a fallback cannot also claim high account confidence
+  * a row routed to a fallback is always flagged for review
+
+Corrections are applied, not merely warned about, and every correction is
+reported on stderr so the caller can describe them accurately.
+
 ``--rows-file`` exists so callers never need a heredoc, a ``-c`` flag, or
-``execute_code`` to feed data in. All three trip command-approval gates that
-stop an email-driven agent dead. Passing a path does not.
+``execute_code``. All three trip command-approval gates that stop an
+email-driven agent dead. Passing a path does not.
 
 Exactly ONE file is written: .xlsx when openpyxl is importable, otherwise .csv.
-Earlier versions emitted both, and the agent dutifully attached both, which
-arrived as two separate emails.
-
-Rows may also be piped on stdin when no --rows-file is given.
 """
 
 import argparse
@@ -61,13 +72,7 @@ def load_scheme(path):
 
 
 def scheme_info(path):
-    """Print scheme identity and counts derived from the file itself.
-
-    This exists because an instruction to 'count the accounts' is not a
-    mechanism for counting. v1.0.0 reported 40 accounts and v1.1.0 reported
-    38 plus 2; the file has held 31 plus 2 the whole time. Numbers must come
-    from len(), not from reading and estimating.
-    """
+    """Print scheme identity and counts derived from the file itself."""
     cfg = load_scheme(path)
     accounts = cfg.get("accounts", [])
     fallbacks = cfg.get("fallback_accounts", [])
@@ -88,8 +93,84 @@ def scheme_info(path):
     return 0
 
 
+def as_int(value):
+    """Return an int, or None when the value is blank or unparseable."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def add_reason(row, text):
+    existing = str(row.get("Review Reason") or "").strip()
+    row["Review Reason"] = ("%s; %s" % (existing, text)) if existing else text
+
+
+def validate(rows, scheme_path):
+    """Force every row into agreement with the scheme. Returns a note list."""
+    cfg = load_scheme(scheme_path)
+    accounts = {a.get("account"): a for a in cfg.get("accounts", [])}
+    fallbacks = {f.get("account"): f for f in cfg.get("fallback_accounts", [])}
+    policy = cfg.get("confidence_policy", {})
+
+    floor = policy.get("route_to_fallback_below", 60)
+    read_floor = policy.get("read_confidence_floor", 50)
+    ambiguous = policy.get("fallback_account_low_confidence", "Ask My Accountant")
+    unreadable = policy.get("fallback_account_unreadable", "Uncategorized Expense")
+
+    notes = []
+    for n, row in enumerate(rows, start=1):
+        label = str(row.get("Vendor") or "row %d" % n)
+        acct = str(row.get("Suggested Account") or "").strip()
+
+        # 1. Unreadable receipts cannot be coded at all.
+        read_conf = as_int(row.get("Read Confidence"))
+        if read_conf is not None and read_conf < read_floor:
+            if acct != unreadable:
+                notes.append("%s: read confidence %d below floor %d, routed to %s"
+                             % (label, read_conf, read_floor, unreadable))
+                row["Suggested Account"] = unreadable
+                add_reason(row, "Read confidence below floor; cannot be coded")
+                acct = unreadable
+
+        # 2. An account absent from the scheme cannot reach the sheet.
+        elif acct not in accounts and acct not in fallbacks:
+            notes.append("%s: account %r is not in the scheme, routed to %s"
+                         % (label, acct, ambiguous))
+            row["Suggested Account"] = ambiguous
+            row["Schedule C Line"] = ""
+            add_reason(row, "Account not present in the coding scheme")
+            acct = ambiguous
+
+        # 3. auto_assign:false accounts are not assignable from a receipt.
+        elif acct in accounts and not accounts[acct].get("auto_assign"):
+            notes.append("%s: %s is not assignable from a receipt, routed to %s"
+                         % (label, acct, ambiguous))
+            row["Suggested Account"] = ambiguous
+            row["Schedule C Line"] = ""
+            add_reason(row, "%s is not assignable from a receipt; needs a human decision" % acct)
+            acct = ambiguous
+
+        # 4. A fallback row cannot claim high account confidence, and is always flagged.
+        if acct in fallbacks:
+            acct_conf = as_int(row.get("Account Confidence"))
+            if acct_conf is None or acct_conf >= floor:
+                corrected = floor - 1
+                if acct_conf is not None:
+                    notes.append("%s: account confidence %d contradicts routing to %s, set to %d"
+                                 % (label, acct_conf, acct, corrected))
+                row["Account Confidence"] = corrected
+            if str(row.get("Needs Review") or "").strip().lower() not in ("yes", "true", "y", "1"):
+                notes.append("%s: routed to %s, forced Needs Review" % (label, acct))
+                row["Needs Review"] = "Yes"
+            row["Deductible %"] = ""
+
+    return notes
+
+
 def normalize(rows):
-    """Force every row to the canonical column set, in order."""
     out = []
     for row in rows:
         if not isinstance(row, dict):
@@ -107,7 +188,6 @@ def write_csv(rows, path):
 
 
 def write_xlsx(rows, path):
-    """Return the path, or None when openpyxl is unavailable."""
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -171,6 +251,7 @@ def main():
     ap.add_argument("--scheme", default=DEFAULT_SCHEME, help="path to coding_scheme.json")
     ap.add_argument("--rows-file", help="path to a JSON array of row objects")
     ap.add_argument("--out", help="output path WITHOUT extension")
+    ap.add_argument("--no-validate", action="store_true", help="skip the consistency pass (testing only)")
     args = ap.parse_args()
 
     if args.scheme_info:
@@ -192,6 +273,17 @@ def main():
     except OSError as exc:
         print("ERROR: could not read rows file: %s" % exc, file=sys.stderr)
         return 2
+
+    if not args.no_validate:
+        try:
+            notes = validate(rows, args.scheme)
+        except Exception as exc:
+            print("ERROR: validation could not run: %s" % exc, file=sys.stderr)
+            return 2
+        if notes:
+            print("VALIDATION: %d row(s) corrected to match the scheme:" % len(notes), file=sys.stderr)
+            for note in notes:
+                print("  - %s" % note, file=sys.stderr)
 
     written = write_xlsx(rows, args.out + ".xlsx")
     if not written:

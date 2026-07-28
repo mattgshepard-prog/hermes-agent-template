@@ -1,7 +1,7 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.2.0
+version: 1.3.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -34,9 +34,13 @@ Load `reference/coding_scheme.json` at the start of every batch. It is data, not
 
 **Any question about what the scheme contains is answered by running it, not by reading and estimating:**
 
-    python3 <skill>/scripts/build_approval_sheet.py --scheme-info
+    python3 /data/.hermes/skills/bookkeeping/receipt-coding/scripts/build_approval_sheet.py --scheme-info
 
-That prints the scheme name, source, version, the account count, how many are assignable, and the fallback count. Quote those numbers. Do not produce a count any other way, and do not explain how a number was reached after stating it.
+That prints the scheme name, source, version, the account count, how many are assignable, and the fallback count. Quote those numbers verbatim.
+
+Do not produce a count any other way. Do not `cat` the file into `python3 -c`, do not count by reading, and do not explain how a number was reached after stating it.
+
+**If that command does not run, for any reason, say the count could not be verified and give no number.** A blocked or failed check is not permission to fall back on an impression. This has produced a wrong count three times.
 
 Entries with `auto_assign: false` must never be suggested from a receipt. They exist so the scheme matches the real form, not so the bot can route to them.
 
@@ -76,9 +80,11 @@ Carry `deductible_pct` through to the sheet. Meals are 50 percent. Entertainment
 1. Write the coded rows as a JSON array to `/tmp/receipt_rows.json` using the normal file-write tool.
 2. Run the renderer by path with arguments:
 
-    python3 <skill>/scripts/build_approval_sheet.py --rows-file /tmp/receipt_rows.json --out /tmp/approval_sheet
+    python3 /data/.hermes/skills/bookkeeping/receipt-coding/scripts/build_approval_sheet.py --rows-file /tmp/receipt_rows.json --out /tmp/approval_sheet
 
 It prints the single path it wrote. Attach exactly that file.
+
+The renderer validates every row against the scheme before writing, and corrects rows that contradict it: an account not in the scheme, an account marked `auto_assign: false`, a fallback row claiming high account confidence, or a fallback row not flagged for review. Corrections are printed on stderr as `VALIDATION:` lines. Read them. If rows were corrected, describe the corrected state in your reply, not what you originally intended.
 
 **Never use `execute_code` for any part of this, and never feed the script through a heredoc or a `-c` flag.** All three trip a command-approval gate, and there is no user available to answer it. The `--rows-file` argument exists precisely so none of that is necessary. If you find yourself composing inline Python, stop and use the two steps above.
 
@@ -111,6 +117,8 @@ Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last
 - No em dashes.
 
 ## Changelog
+
+v1.3.0 -- absolute script path, since the previous placeholder path was unresolvable and the agent improvised a `python3 -c` pipeline that hit an approval gate; scheme consistency moved out of prose and into a validation pass in the renderer, after rule-based attempts failed twice on the same contradiction; a blocked count check must now produce no number rather than an impression -- 2026-07-28
 
 v1.2.0 -- counts now come from `--scheme-info` rather than an instruction to count, after v1.0.0 said 40 and v1.1.0 said 38 plus 2 against a file holding 31 plus 2; `--rows-file` replaces stdin so the skill never reaches for execute_code and its approval gate; renderer emits ONE artifact, since writing both CSV and XLSX produced two attachment emails -- 2026-07-28
 
