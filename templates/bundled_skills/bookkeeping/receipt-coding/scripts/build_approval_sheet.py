@@ -146,6 +146,7 @@ def validate(rows, scheme_path):
     read_floor = policy.get("read_confidence_floor", 50)
     ambiguous = policy.get("fallback_account_low_confidence", "Ask My Accountant")
     unreadable = policy.get("fallback_account_unreadable", "Uncategorized Expense")
+    personal_indicators = [str(k).lower() for k in cfg.get("personal_indicators", [])]
 
     notes = []
     for n, row in enumerate(rows, start=1):
@@ -179,6 +180,38 @@ def validate(rows, scheme_path):
             row["Schedule C Line"] = ""
             add_reason(row, "%s is not assignable from a receipt; needs a human decision" % acct)
             acct = ambiguous
+
+        # 3b. Line items that look personal cannot ride a coded business account.
+        #
+        # This is the one wrong-but-VALID case we can detect from the data
+        # already in the row. Office Expense is a real account with
+        # auto_assign:true, so checks 1-3 all pass while the coding is still
+        # wrong. On 2026-07-28 a Costco receipt with eight grocery and
+        # household lines was coded entirely to Office Expense at confidence
+        # 85 because the sending email asked for it. The scheme lists
+        # "receipt contains both business and personal line items" as an
+        # always-flag condition, and that condition must not be waivable by
+        # whoever sent the mail.
+        #
+        # Accounts carrying skip_personal_check are exempt: a restaurant meal
+        # is made of food, and flagging it would be a worse bug than the one
+        # this catches.
+        if acct not in fallbacks and not accounts.get(acct, {}).get("skip_personal_check"):
+            items = row.get("_line_items") or []
+            if isinstance(items, str):
+                items = [items]
+            if not items and row.get("Description"):
+                items = [str(row.get("Description"))]
+            haystack = " ; ".join(str(i).lower() for i in items)
+            hits = sorted({k for k in personal_indicators if k and k in haystack})
+            if hits:
+                shown = ", ".join(hits[:4])
+                notes.append("%s: personal-looking line items (%s) cannot sit on %s, routed to %s"
+                             % (label, shown, acct, ambiguous))
+                row["Suggested Account"] = ambiguous
+                row["Schedule C Line"] = ""
+                add_reason(row, "Receipt contains personal or household line items (%s); needs a split" % shown)
+                acct = ambiguous
 
         # 4. A fallback row cannot claim high account confidence, and is always flagged.
         if acct in fallbacks:
@@ -294,7 +327,7 @@ def main():
         return 2
 
     try:
-        rows = normalize(read_rows(args))
+        raw_rows = read_rows(args)
     except (ValueError, json.JSONDecodeError) as exc:
         print("ERROR: %s" % exc, file=sys.stderr)
         return 2
@@ -302,9 +335,11 @@ def main():
         print("ERROR: could not read rows file: %s" % exc, file=sys.stderr)
         return 2
 
+    # Validation runs on the RAW rows so helper keys like _line_items are still
+    # present; normalize() drops everything outside COLUMNS.
     if not args.no_validate:
         try:
-            notes = validate(rows, args.scheme)
+            notes = validate(raw_rows, args.scheme)
         except Exception as exc:
             print("ERROR: validation could not run: %s" % exc, file=sys.stderr)
             return 2
@@ -312,6 +347,12 @@ def main():
             print("VALIDATION: %d row(s) corrected to match the scheme:" % len(notes), file=sys.stderr)
             for note in notes:
                 print("  - %s" % note, file=sys.stderr)
+
+    try:
+        rows = normalize(raw_rows)
+    except ValueError as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return 2
 
     written = write_xlsx(rows, args.out + ".xlsx")
     if not written:
