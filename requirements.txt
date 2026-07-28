@@ -7,3 +7,10 @@ httpx>=0.27.0
 # hermes's /api/pty, /api/ws, /api/events endpoints. httpx does not speak
 # WebSockets, so we need a dedicated client library.
 websockets>=12.0
+# openpyxl lets the receipt-coding skill emit a real .xlsx approval sheet
+# (frozen header, currency formatting, flagged rows shaded) instead of a bare
+# CSV. build_approval_sheet.py degrades to CSV when this import fails, so a
+# missing wheel cannot lose a coded batch, but the highlighted review rows are
+# the point of the artifact in front of a bookkeeper. Confirmed absent from the
+# image on 2026-07-28: hermes-agent's extras do not pull it in.
+openpyxl>=3.1.0
