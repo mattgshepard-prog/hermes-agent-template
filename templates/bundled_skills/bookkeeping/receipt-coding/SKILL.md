@@ -1,7 +1,7 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.1.0
+version: 1.2.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -31,6 +31,12 @@ The value is a reviewed first pass, not an unattended one. A batch where six of 
 Load `reference/coding_scheme.json` at the start of every batch. It is data, not code. It carries the account list, the confidence policy, the fallback accounts, and the always-flag conditions.
 
 **Only ever suggest an account name that appears in that file.** Never invent one, never abbreviate one, never merge two. If nothing fits, use a fallback account and say why in the review reason.
+
+**Any question about what the scheme contains is answered by running it, not by reading and estimating:**
+
+    python3 <skill>/scripts/build_approval_sheet.py --scheme-info
+
+That prints the scheme name, source, version, the account count, how many are assignable, and the fallback count. Quote those numbers. Do not produce a count any other way, and do not explain how a number was reached after stating it.
 
 Entries with `auto_assign: false` must never be suggested from a receipt. They exist so the scheme matches the real form, not so the bot can route to them.
 
@@ -65,8 +71,16 @@ Apply every condition in `always_flag_for_review` regardless of confidence. A hi
 
 Carry `deductible_pct` through to the sheet. Meals are 50 percent. Entertainment is not deductible and is never coded to meals; flag it instead.
 
-**Step 4 - Build the approval sheet.**
-`python scripts/build_approval_sheet.py --out /tmp/approval_sheet` with the rows as JSON on stdin. It writes CSV always and XLSX when the library is available, and it returns the paths it wrote.
+**Step 4 - Build the approval sheet.** Two steps, in this order:
+
+1. Write the coded rows as a JSON array to `/tmp/receipt_rows.json` using the normal file-write tool.
+2. Run the renderer by path with arguments:
+
+    python3 <skill>/scripts/build_approval_sheet.py --rows-file /tmp/receipt_rows.json --out /tmp/approval_sheet
+
+It prints the single path it wrote. Attach exactly that file.
+
+**Never use `execute_code` for any part of this, and never feed the script through a heredoc or a `-c` flag.** All three trip a command-approval gate, and there is no user available to answer it. The `--rows-file` argument exists precisely so none of that is necessary. If you find yourself composing inline Python, stop and use the two steps above.
 
 **Step 5 - Reply.** Outbound email from this gateway is **plain text only**. There is no HTML alternative on any send path. Markdown tables, bold, and headers do not render, they arrive as literal pipes and asterisks.
 
@@ -86,6 +100,8 @@ Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last
 - Never state a total the receipt does not show. An unreadable total is unreadable.
 - Never guess a date. A missing date is a flag, not a estimate.
 - Never suggest an account outside the scheme file.
+- Never use `execute_code`, heredocs, or `python -c` in this skill. Write a file, then call the script by path.
+- Attach exactly ONE file: the single path the renderer printed. Never attach both a CSV and an XLSX, and never send attachments as separate follow-up emails. One reply, one attachment.
 - Never silently drop a receipt. Every attachment received appears as a row, even if that row is entirely flags.
 - Duplicates within a batch are flagged, not removed.
 - If asked whether a specific expense is deductible, answer from the scheme notes and say plainly that final treatment is the bookkeeper's call. This skill codes, it does not give tax advice.
@@ -95,6 +111,8 @@ Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last
 - No em dashes.
 
 ## Changelog
+
+v1.2.0 -- counts now come from `--scheme-info` rather than an instruction to count, after v1.0.0 said 40 and v1.1.0 said 38 plus 2 against a file holding 31 plus 2; `--rows-file` replaces stdin so the skill never reaches for execute_code and its approval gate; renderer emits ONE artifact, since writing both CSV and XLSX produced two attachment emails -- 2026-07-28
 
 v1.1.0 -- attach-never-tabulate (outbound email is plain text only, no HTML path exists); split confidence into read vs account so a fallback route cannot report a high number; require counting the scheme file rather than estimating, after v1.0.0 reported 40 accounts when the file holds 31 plus 2 fallbacks -- 2026-07-28
 

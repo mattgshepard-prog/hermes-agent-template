@@ -1,7 +1,7 @@
 {
   "scheme_id": "schedule-c-2025-default",
   "display_name": "Schedule C (Sole Proprietor) Default",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "source": "IRS Schedule C (Form 1040) 2025, verified against https://www.irs.gov/pub/irs-pdf/f1040sc.pdf on 2026-07-28",
   "entity_type": "sole_proprietor_or_smllc",
   "notes": "This is a REFERENCE scheme, not a client chart of accounts. Swap this file to code against any client's own COA. Only 'account', 'auto_assign' and 'confidence_floor' are required per entry; every other field is optional and used only to improve suggestions.",
@@ -529,8 +529,7 @@
     }
   ],
   "counting": {
-    "rule": "When asked how many accounts this scheme has, count the accounts array and report it. Count fallback_accounts separately and say so. Do not estimate and do not rationalize a number after stating it.",
-    "accounts_count_is": "len(accounts)",
-    "fallbacks_count_is": "len(fallback_accounts)"
+    "rule": "Do not count by reading this file. Run scripts/build_approval_sheet.py --scheme-info and quote its output. An instruction to count is not a mechanism for counting.",
+    "command": "python3 <skill>/scripts/build_approval_sheet.py --scheme-info"
   }
 }
