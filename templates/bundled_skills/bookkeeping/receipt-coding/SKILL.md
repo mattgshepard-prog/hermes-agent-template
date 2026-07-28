@@ -1,7 +1,7 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.0.0
+version: 1.1.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -44,12 +44,22 @@ The default scheme is the IRS Schedule C reference set. If a client's own chart 
 
 Sales tax and tip are extracted as their own columns and are NOT folded into the expense amount. Getting this wrong is the first thing a bookkeeper checks.
 
-**Step 3 - Code and score.** Match to an account using the line items first and the vendor name second. A big-box vendor sells across several categories, so the line items govern. Score confidence honestly 0-100 and apply `confidence_policy` from the scheme file:
+**Step 3 - Code and score.** Match to an account using the line items first and the vendor name second. A big-box vendor sells across several categories, so the line items govern.
+
+Score TWO separate numbers 0-100. They answer different questions and must not be merged:
+
+- **read confidence** - how clearly could the receipt itself be read
+- **account confidence** - how sure are you of the account, given what was read
+
+Routing is driven by `account_confidence` against `confidence_policy`:
 
 - at or above the auto threshold: code it, no flag
 - in the flag band: code it, flag it, give the reason
 - below the floor: route to `Ask My Accountant` and give the reason
-- unreadable: route to `Uncategorized Expense`
+
+`read_confidence` below its floor routes to `Uncategorized Expense` regardless of account confidence, because an unread receipt cannot be coded at all.
+
+When an account is disqualified because it is `auto_assign: false`, the row goes to a fallback and **account confidence must be reported below the floor**, since confidence in an account you are not permitted to assign is zero. Reporting a high number next to a fallback route tells the reader two contradictory things.
 
 Apply every condition in `always_flag_for_review` regardless of confidence. A high-confidence match on a receipt that might be personal is still flagged.
 
@@ -58,13 +68,17 @@ Carry `deductible_pct` through to the sheet. Meals are 50 percent. Entertainment
 **Step 4 - Build the approval sheet.**
 `python scripts/build_approval_sheet.py --out /tmp/approval_sheet` with the rows as JSON on stdin. It writes CSV always and XLSX when the library is available, and it returns the paths it wrote.
 
-**Step 5 - Reply.** Send the sheet as an attachment. In the body: how many receipts were read, how many coded cleanly, how many need review, and the flagged rows listed with their reasons. Keep it to what the reader needs to act.
+**Step 5 - Reply.** Outbound email from this gateway is **plain text only**. There is no HTML alternative on any send path. Markdown tables, bold, and headers do not render, they arrive as literal pipes and asterisks.
 
-If the sheet cannot be attached for any reason, put the table in the body and say the attachment failed. Never go silent.
+So: **never put a table in the body.** The sheet is the attachment, the body is prose.
+
+Body contains: how many receipts were read, how many coded cleanly, how many need review, and the flagged rows named with their reasons in sentences. Keep it short enough to read on a phone.
+
+If the sheet cannot be attached, say the attachment failed and offer to resend. Do not fall back to a table in the body, and do not go silent.
 
 ## Column order for the sheet
 
-Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last 4, Suggested Account, Schedule C Line, Deductible %, Confidence, Needs Review, Review Reason, Source File.
+Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last 4, Suggested Account, Schedule C Line, Deductible %, Read Confidence, Account Confidence, Needs Review, Review Reason, Source File.
 
 ## Hard rules
 
@@ -75,8 +89,13 @@ Date, Vendor, Description, Subtotal, Sales Tax, Tip, Total, Payment Method, Last
 - Never silently drop a receipt. Every attachment received appears as a row, even if that row is entirely flags.
 - Duplicates within a batch are flagged, not removed.
 - If asked whether a specific expense is deductible, answer from the scheme notes and say plainly that final treatment is the bookkeeper's call. This skill codes, it does not give tax advice.
+- When asked anything countable about the scheme (how many accounts, which lines are covered), COUNT the entries in the file and answer from the count. Never estimate, and never justify a number after the fact. Accounts and fallback accounts are counted and reported separately.
+- Never describe the scheme's contents from memory of what a Schedule C usually contains. Read the file.
+- No markdown tables, headers, or bold in an email body. Plain prose only.
 - No em dashes.
 
 ## Changelog
+
+v1.1.0 -- attach-never-tabulate (outbound email is plain text only, no HTML path exists); split confidence into read vs account so a fallback route cannot report a high number; require counting the scheme file rather than estimating, after v1.0.0 reported 40 accounts when the file holds 31 plus 2 fallbacks -- 2026-07-28
 
 v1.0.0 -- initial build. Schedule C reference scheme verified against the live 2025 form, including the 27a/27b layout where 27a is the Form 7205 energy deduction and other expenses flow from Part V line 48 to 27b -- 2026-07-28

@@ -61,7 +61,7 @@ PARALLEL_API_KEY FIRECRAWL_API_KEY TAVILY_API_KEY FAL_KEY BROWSERBASE_API_KEY \
 BROWSERBASE_PROJECT_ID GITHUB_TOKEN VOICE_TOOLS_OPENAI_KEY HONCHO_API_KEY \
 TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
 SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED EMAIL_ADDRESS EMAIL_PASSWORD \
-EMAIL_IMAP_HOST EMAIL_SMTP_HOST EMAIL_ALLOWED_USERS \
+EMAIL_IMAP_HOST EMAIL_SMTP_HOST EMAIL_ALLOWED_USERS EMAIL_HOME_ADDRESS \
 MATTERMOST_URL MATTERMOST_TOKEN MATRIX_HOMESERVER \
 MATRIX_ACCESS_TOKEN MATRIX_USER_ID GATEWAY_ALLOW_ALL_USERS ADMIN_USERNAME \
 ADMIN_PASSWORD COMPOSIO_API_KEY COMPOSIO_USER_ID NOTION_TOKEN DIGEST_EMAIL_TO"
@@ -350,6 +350,60 @@ PYEOF3
   fi
 else
   echo "[start.sh] Honcho apiKey seed skipped (disabled, no HONCHO_API_KEY, or no honcho.json)."
+fi
+
+# ---------------------------------------------------------------------------
+# Email display wire (display-wire-v1)
+#
+# Hermes display defaults are written for chat platforms, where tool progress
+# and interim status messages edit a single message in place. Email has no
+# message editing, so the gateway's segment breaks turn each of those into a
+# SEPARATE email. A one-question request arrived as three messages: tool
+# chrome, an interim "I need to load the skill first", then the real answer.
+#
+# The email adapter overrides none of the base rendering hooks, so it inherits
+# chat behavior wholesale. The fix is config, not a patch to the vendored
+# package, which also means nothing to re-apply after an agent update.
+#
+# Scoped to display.platforms.email so Telegram keeps its normal progress UI
+# on bots that run both.
+#
+# WARNING: tool_progress MUST be the STRING "off", not a boolean. The gateway
+# resolves it as `progress_mode = _resolved_tp or _env_tp or "all"`, so a
+# boolean False is falsy and falls through to "all" -- the exact opposite of
+# the intent. `hermes config set <key> off` coerces to boolean False and is
+# therefore unusable here, which is why this writes YAML directly.
+#
+# - Idempotent: sets the same five keys on every boot.
+# - config.yaml is backed up once before the first wire.
+# - Fully failure-tolerant: never blocks gateway boot.
+if [ "${HERMES_SKIP_DISPLAY_WIRE:-0}" != "1" ] && [ -f /data/.hermes/config.yaml ]; then
+  if [ ! -f /data/.hermes/config.yaml.bak-pre-display-wire ]; then
+    cp /data/.hermes/config.yaml /data/.hermes/config.yaml.bak-pre-display-wire 2>/dev/null || true
+  fi
+  if python3 <<'PYEOF4'
+import yaml
+path = "/data/.hermes/config.yaml"
+cfg = yaml.safe_load(open(path, encoding="utf-8")) or {}
+email = cfg.setdefault("display", {}).setdefault("platforms", {}).setdefault("email", {})
+email["tool_progress"] = "off"            # string, NOT boolean -- see warning above
+email["interim_assistant_messages"] = False
+email["long_running_notifications"] = False
+email["busy_ack_detail"] = False
+email["streaming"] = False
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+import os
+os.replace(tmp, path)
+PYEOF4
+  then
+    echo "[start.sh] Wired display.platforms.email in config.yaml (single-email replies)."
+  else
+    echo "[start.sh] WARNING: email display wire failed; continuing boot."
+  fi
+else
+  echo "[start.sh] Email display wire skipped (disabled or no config.yaml yet)."
 fi
 
 exec python /app/server.py
