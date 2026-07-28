@@ -38,6 +38,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 
 COLUMNS = [
@@ -130,6 +131,16 @@ def as_int(value):
         return None
 
 
+def as_money(value):
+    """Return a float, or None when blank or unparseable."""
+    if value is None or value == "":
+        return None
+    try:
+        return round(float(str(value).replace("$", "").replace(",", "").strip()), 2)
+    except (TypeError, ValueError):
+        return None
+
+
 def add_reason(row, text):
     existing = str(row.get("Review Reason") or "").strip()
     row["Review Reason"] = ("%s; %s" % (existing, text)) if existing else text
@@ -181,6 +192,40 @@ def validate(rows, scheme_path):
             add_reason(row, "%s is not assignable from a receipt; needs a human decision" % acct)
             acct = ambiguous
 
+        # 3a. Illegible characters in the transcript mean the numbers were NOT read.
+        #
+        # On 2026-07-28 a faded fuel receipt reading "TOTAL ??.??" and dated
+        # "07/1?/2026" came back as total 77.77 on 7/17/2026 at read
+        # confidence 85. Every "?" had been resolved to a "7". Nothing else in
+        # this validator could see it, because read confidence is self-reported
+        # and an overconfident misread contradicts nothing.
+        #
+        # So the skill now transcribes VERBATIM into _raw_text before
+        # interpreting anything, preserving unresolvable characters as "?".
+        # Transcribing what is on the page is a weaker ask than reading it
+        # correctly, and it gives us something mechanical to check.
+        #
+        # A "?" touching a digit means a number on this receipt could not be
+        # read. We blank the money and the date rather than keep a value that
+        # was inferred, because a fabricated total that looks authoritative is
+        # worse than an empty cell that says "look at this one".
+        raw = str(row.get("_raw_text") or "")
+        if raw:
+            if re.search(r"\?\s*\?|\d\s*\?|\?\s*\d|\?\.\d|\d\.\?", raw):
+                notes.append("%s: transcript contains unreadable characters next to digits; "
+                             "money and date blanked and routed to %s" % (label, unreadable))
+                for f in ("Subtotal", "Sales Tax", "Tip", "Total", "Date", "Schedule C Line", "Deductible %"):
+                    row[f] = ""
+                row["Suggested Account"] = unreadable
+                row["Read Confidence"] = 0
+                add_reason(row, "Characters on this receipt could not be read; no amount or date can be "
+                                "stated from it. Verify against the card statement.")
+                acct = unreadable
+        else:
+            notes.append("%s: no _raw_text transcript supplied, cannot verify the amounts were read" % label)
+            add_reason(row, "No verbatim transcript captured; amounts unverified")
+            row["Needs Review"] = "Yes"
+
         # 3b. Line items that look personal cannot ride a coded business account.
         #
         # This is the one wrong-but-VALID case we can detect from the data
@@ -212,6 +257,26 @@ def validate(rows, scheme_path):
                 row["Schedule C Line"] = ""
                 add_reason(row, "Receipt contains personal or household line items (%s); needs a split" % shown)
                 acct = ambiguous
+
+        # 3c. Arithmetic must reconcile, and a total with no subtotal is unverified.
+        if acct not in fallbacks and acct != unreadable:
+            sub, tax, tip, tot = (as_money(row.get(k)) for k in ("Subtotal", "Sales Tax", "Tip", "Total"))
+            if sub is not None and tot is not None:
+                calc = round(sub + (tax or 0) + (tip or 0), 2)
+                if abs(calc - tot) > 0.02:
+                    notes.append("%s: %.2f + %.2f + %.2f = %.2f does not match stated total %.2f"
+                                 % (label, sub, tax or 0, tip or 0, calc, tot))
+                    add_reason(row, "Amounts do not reconcile (%.2f vs stated %.2f)" % (calc, tot))
+                    row["Needs Review"] = "Yes"
+            elif tot is not None and sub is None:
+                read_c = as_int(row.get("Read Confidence"))
+                if read_c is None or read_c < 95:
+                    notes.append("%s: total %.2f has no subtotal to check it against at read confidence %s, "
+                                 "routed to %s" % (label, tot, read_c, ambiguous))
+                    row["Suggested Account"] = ambiguous
+                    row["Schedule C Line"] = ""
+                    add_reason(row, "Total could not be verified against a subtotal")
+                    acct = ambiguous
 
         # 4. A fallback row cannot claim high account confidence, and is always flagged.
         if acct in fallbacks:

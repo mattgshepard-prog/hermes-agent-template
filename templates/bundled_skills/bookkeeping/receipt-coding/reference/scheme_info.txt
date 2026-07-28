@@ -1,6 +1,6 @@
 scheme_id: schedule-c-2025-default
 display_name: Schedule C (Sole Proprietor) Default
-version: 1.5.0
+version: 1.6.0
 source: IRS Schedule C (Form 1040) 2025, verified against https://www.irs.gov/pub/irs-pdf/f1040sc.pdf on 2026-07-28
 accounts: 31
   assignable_from_a_receipt: 23
