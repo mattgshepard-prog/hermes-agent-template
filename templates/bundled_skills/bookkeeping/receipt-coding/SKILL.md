@@ -1,7 +1,7 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.7.0
+version: 1.8.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -116,9 +116,9 @@ Carry `deductible_pct` through to the sheet. Meals are 50 percent. Entertainment
     **Use the exact column names as JSON keys: title case, with spaces.** `"Suggested Account"`, not `suggested_account`. The renderer reads each row as `row.get("Suggested Account")` and does no case folding, so snake_case keys silently produce a sheet where every column is empty. The two internal keys are the exception and stay as written: `_raw_text` and `_line_items`.
 2. Run the renderer by path with arguments:
 
-    python3 /data/.hermes/skills/bookkeeping/receipt-coding/scripts/build_approval_sheet.py --rows-file /tmp/receipt_rows.json --out /tmp/approval_sheet
+    python3 /data/.hermes/skills/bookkeeping/receipt-coding/scripts/build_approval_sheet.py --rows-file /tmp/receipt_rows.json --out /tmp/approval_sheet --summary-file /tmp/receipt_summary.txt
 
-It prints the single path it wrote. Attach exactly that file.
+It prints two lines: `SUMMARY: <path>` first, then the sheet path last. Attach the file named on the **last** line. The summary path holds the reply body, which you send verbatim as the caption.
 
 The renderer validates every row against the scheme before writing, and corrects rows that contradict it: an account not in the scheme, an account marked `auto_assign: false`, a fallback row claiming high account confidence, or a fallback row not flagged for review. Corrections are printed on stderr as `VALIDATION:` lines. Read them. If rows were corrected, describe the corrected state in your reply, not what you originally intended.
 
@@ -129,6 +129,12 @@ The renderer validates every row against the scheme before writing, and corrects
 Send the sheet as an attachment **with the entire summary as its caption**. The caption becomes the email body, so the recipient gets prose and attachment in a single email. Make exactly one send call.
 
 **Do not send the summary as a separate message first and the file after.** That arrives as two emails and reads as though the assistant lost its place. On 2026-07-29 it did exactly this: one email carrying the summary, a second carrying the sheet.
+
+**Do not compose the reply body yourself.** Pass `--summary-file /tmp/receipt_summary.txt` to the renderer and send that file's contents, verbatim, as the body. Add nothing, remove nothing, reorder nothing.
+
+The reason is specific. On 2026-07-29 the sheet was right and the email was wrong: the Shell row had its date blanked by the validator, and the covering email still said `Shell (07/17/2026) - Receipt total is unreadable`, quoting a date that is not on the receipt and not on the sheet. You would have written that email from your own notes, which still held the reading the validator had already rejected. The summary file is built from the validated rows, so a blanked value cannot reappear in it.
+
+That was the third time the same invented figure moved instead of disappearing: the Total column, then the Description, then the covering prose. Each surface got fixed and the guess moved to the next one. The reply body is no longer a surface you write on.
 
 **The caption is the deliverable, not your working notes.** Start it with the counts. Never narrate what you are about to do, never describe the tools or the renderer by name, and never open with an interjection. That same 2026-07-29 reply began:
 
@@ -165,6 +171,9 @@ The renderer independently checks line items against the assigned account and re
 
 ## Hard rules
 
+- **Report `read_confidence` honestly, and know that it now acts.** Below the scheme's `read_confidence_floor` the renderer blanks that row's money, date and description outright and routes it to `Uncategorized Expense`. This is deliberate: on 2026-07-29 a receipt was scored 25, flagged, and still carried an invented date into the sheet and the email. Do not inflate the number to keep a row looking complete, and do not deflate it to be safe, because a low score erases real data on a receipt you actually could read.
+- **The reply body comes from `--summary-file`, verbatim.** You do not write it.
+
 - A `?` next to a digit anywhere in `_raw_text` blanks that row's money, date, **and description** and routes it to `Uncategorized Expense`. Do not work around this by moving a figure you inferred into the description, the vendor, or the review reason. If the page could not be read, no column may carry a number taken from it.
 
 - Never write to QuickBooks or any accounting system. This skill has no such access and must not claim to.
@@ -195,8 +204,12 @@ The renderer independently checks line items against the assigned account and re
 - **Native vision** covers images. Calling `vision_analyze` or handing receipts to a subagent fails.
 - **Inline shell** (`python3 -c`, heredocs, `execute_code`) trips an approval gate nobody is there to answer. Every script this skill needs is committed and runnable by path.
 - **A `?` beside a digit** in the transcript blanks money, date, and description. That is the validator proving the numbers were guessed, not a bug.
+- **Low `read_confidence` blanks the same fields**, independently, with no `?` required. Preserving `??.??` while quietly resolving `07/1?/2026` to `07/17/2026` is the exact failure this catches.
+- **The reply body is generated** by `--summary-file`. Writing your own reintroduces figures the validator removed.
 
 ## Changelog
+
+v1.8.0 -- Low read confidence became an independent redaction trigger, and the reply body became a generated artifact. Both come from one run on 2026-07-29 where the sheet was correct and the email was not. The model scored its own reading of a faded fuel receipt at 25, flagged it, faithfully preserved "??.??" twice, and in the same transcript resolved "07/1?/2026" to "07/17/2026" and "3.4?" to "3.47" -- fully occluded tokens survive because there is nothing to complete, while a token missing one character from a rigid format gets completed. The "?" rule therefore depends on the model volunteering evidence against itself, which cannot be relied on. Confidence below the scheme floor now blanks money, date and description on its own. The old low-confidence rule also carried a guard that skipped any row already routed to the unreadable fallback, so the clearest case was the one it ignored; that guard is gone. The covering email is now built from the validated rows by the renderer rather than written from the model's own notes, after an invented date survived into the reply despite being blanked on the sheet -- 2026-07-29
 
 v1.7.0 -- PDF text extraction moved to a committed stdlib-only script, after an emailed Adobe invoice was returned unread and the agent's two attempts to improvise an extractor both tripped the approval gate and reached the client as warning emails; the container has no PDF library at all and the invoice was ASCII85+Flate, both stdlib-decodable. The illegibility rule now blanks Description as well as money and date, after a faded fuel receipt shipped with blank money and a description reading "Unleaded gasoline 77.77 GAL @ $3.47/gal", from which the missing total reconstructs exactly. Meals substantiation moved from prose into the renderer as `requires_substantiation`, after the flag held on 07-28 and dropped on 07-29 on the same Panera receipt. JSON key casing documented: the renderer never case-folded, so snake_case rows had been producing empty sheets. That last defect was found by the agent itself mid-run on 2026-07-29 by reading the renderer source; it is recorded here rather than left as an unreviewed edit on the volume -- 2026-07-29
 

@@ -141,6 +141,33 @@ def as_money(value):
         return None
 
 
+REDACTED_REASON = ("This receipt could not be read. No amount and no date were "
+                   "recoverable from the image, so every figure has been left "
+                   "blank. Check it against the original before entering it.")
+
+
+def redact_unreadable(row, label, notes, note_text, unreadable):
+    """Strip every inferred figure from a row whose source could not be read.
+
+    Money, date and the scheme-derived fields go blank, the description keeps
+    only its non-numeric words, and the review reason is REPLACED rather than
+    appended to. Replacement matters: on 2026-07-29 the model's own reason read
+    "Receipt total is unreadable - shows ??.?? gallons at $3.47/gal with total
+    ??.??", quoting a unit price that was never legible on the page. A reason
+    written from an unreliable reading is itself unreliable.
+    """
+    for f in ("Subtotal", "Sales Tax", "Tip", "Total", "Date",
+              "Schedule C Line", "Deductible %"):
+        row[f] = ""
+    desc = scrub_numbers(row.get("Description"))
+    row["Description"] = ("%s (amounts unreadable)" % desc if desc
+                          else "Contents could not be read")
+    row["Suggested Account"] = unreadable
+    row["Needs Review"] = "Yes"
+    row["Review Reason"] = REDACTED_REASON
+    notes.append(note_text)
+
+
 def scrub_numbers(text):
     """Drop every whitespace token that contains a digit.
 
@@ -177,14 +204,45 @@ def validate(rows, scheme_path):
         acct = str(row.get("Suggested Account") or "").strip()
 
         # 1. Unreadable receipts cannot be coded at all.
+        #
+        # This rule used to only re-route the account, and only when the model
+        # had not already routed it itself ("if acct != unreadable"). Both
+        # halves were wrong.
+        #
+        # The guard meant the clearest case was the one that got skipped: on
+        # 2026-07-29 a fuel receipt came back at read confidence 25 with the
+        # account already set to Uncategorized Expense, so this rule saw
+        # nothing to do and left "07/17/2026" sitting in the Date field. The
+        # model had done the right thing with the account and the wrong thing
+        # with the date, and correctly routing itself bought it a free pass.
+        #
+        # Re-routing alone was also not enough. The row still carried a date
+        # and a description built from a reading the model itself scored 25.
+        #
+        # Low confidence is now an INDEPENDENT reason to strip every figure,
+        # and it does not depend on the transcript containing evidence. The
+        # "?" rule below only fires if a "?" survived into _raw_text, and that
+        # is unreliable in a specific way: fully occluded tokens like "??.??"
+        # are preserved, but a token missing a single character from a rigid
+        # format gets completed, because completing it is what filling that
+        # field looks like. "07/1?/2026" became "07/17/2026" and "3.4?" became
+        # "3.47" in the same transcript that faithfully kept two "??.??".
+        # On a receipt where every ambiguity is isolated, no "?" is left to
+        # find and the "?" rule sees a clean row.
+        #
+        # Self-reported confidence is imperfect and asymmetric: high confidence
+        # proves nothing, but low confidence is the model saying plainly that
+        # the figures should not be trusted. There is no reason to argue.
         read_conf = as_int(row.get("Read Confidence"))
         if read_conf is not None and read_conf < read_floor:
-            if acct != unreadable:
-                notes.append("%s: read confidence %d below floor %d, routed to %s"
-                             % (label, read_conf, read_floor, unreadable))
-                row["Suggested Account"] = unreadable
-                add_reason(row, "Read confidence below floor; cannot be coded")
-                acct = unreadable
+            redact_unreadable(
+                row, label, notes,
+                "%s: read confidence %d is below the floor of %d; money, date and "
+                "description blanked and routed to %s"
+                % (label, read_conf, read_floor, unreadable),
+                unreadable)
+            row["Read Confidence"] = 0
+            acct = unreadable
 
         # 2. An account absent from the scheme cannot reach the sheet.
         elif acct not in accounts and acct not in fallbacks:
@@ -224,25 +282,14 @@ def validate(rows, scheme_path):
         raw = str(row.get("_raw_text") or "")
         if raw:
             if re.search(r"\?\s*\?|\d\s*\?|\?\s*\d|\?\.\d|\d\.\?", raw):
-                notes.append("%s: transcript contains unreadable characters next to digits; "
-                             "money and date blanked and routed to %s" % (label, unreadable))
-                for f in ("Subtotal", "Sales Tax", "Tip", "Total", "Date", "Schedule C Line", "Deductible %"):
-                    row[f] = ""
-                # On 2026-07-29 the rule above fired correctly on a faded fuel
-                # receipt and the sheet still shipped a Description reading
-                # "Unleaded gasoline 77.77 GAL @ $3.47/gal". The money columns
-                # were blank, so the row looked like a total that was merely
-                # cut off, and 77.77 x 3.47 reconstructs a total that was never
-                # on the page. Blanking the money is not enough while any
-                # column still carries an inferred figure.
-                desc = scrub_numbers(row.get("Description"))
-                row["Description"] = ("%s (amounts unreadable)" % desc if desc
-                                      else "Contents could not be read")
-                row["Suggested Account"] = unreadable
+                redact_unreadable(
+                    row, label, notes,
+                    "%s: transcript contains unreadable characters next to digits; "
+                    "money, date and description blanked and routed to %s" % (label, unreadable),
+                    unreadable)
                 row["Read Confidence"] = 0
-                add_reason(row, "Characters on this receipt could not be read; no amount or date can be "
-                                "stated from it. Verify against the card statement.")
                 acct = unreadable
+
         else:
             notes.append("%s: no _raw_text transcript supplied, cannot verify the amounts were read" % label)
             add_reason(row, "No verbatim transcript captured; amounts unverified")
@@ -346,6 +393,63 @@ def normalize(rows):
     return out
 
 
+def build_summary(rows):
+    """Compose the reply body from VALIDATED rows.
+
+    Why this is not left to the model
+    ---------------------------------
+    On 2026-07-29 the sheet was correct and the covering email was not. The
+    Shell row had its date blanked by the validator, and the email still
+    opened "Shell (07/17/2026) - Receipt total is unreadable", quoting a date
+    that is not on the receipt and not on the sheet. The email had been
+    written from the model's own pre-validation row.
+
+    That is the third time the same invented figure relocated rather than
+    disappeared: first the Total column, then the Description, then the
+    covering prose. Each fix worked and each time the guess moved to the
+    nearest surface the validator did not cover. Prose is the last such
+    surface, so it stops being prose.
+
+    Everything below is derived from `rows` AFTER validation. A value the
+    validator blanked cannot reappear here, because there is nothing to read
+    it from.
+    """
+    def flagged(r):
+        return str(r.get("Needs Review") or "").strip().lower() in ("yes", "true", "y", "1")
+
+    total = len(rows)
+    review = [r for r in rows if flagged(r)]
+    clean = total - len(review)
+
+    noun = "receipt" if total == 1 else "receipts"
+    lines = ["I read %d %s. %d coded cleanly, %d need review."
+             % (total, noun, clean, len(review))]
+
+    if review:
+        lines.append("")
+        lines.append("Flagged for review:")
+        for r in review:
+            vendor = str(r.get("Vendor") or "").strip() or "Unknown vendor"
+            date = str(r.get("Date") or "").strip()
+            amount = str(r.get("Total") or "").strip()
+            reason = " ".join(str(r.get("Review Reason") or "").split()) or "Flagged for review."
+
+            # Blank money or date is not an omission to paper over. It is the
+            # validator reporting the figure was never legible, and the reply
+            # has to say so rather than quietly leaving it out.
+            if date and amount:
+                ident = "%s, %s, %s" % (vendor, date, amount)
+            elif date:
+                ident = "%s, %s, amount could not be read" % (vendor, date)
+            elif amount:
+                ident = "%s, %s, date could not be read" % (vendor, amount)
+            else:
+                ident = "%s, date and amount could not be read" % vendor
+            lines.append("- %s: %s" % (ident, reason))
+
+    return "\n".join(lines) + "\n"
+
+
 def write_csv(rows, path):
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=COLUMNS)
@@ -419,6 +523,8 @@ def main():
     ap.add_argument("--rows-file", help="path to a JSON array of row objects")
     ap.add_argument("--out", help="output path WITHOUT extension")
     ap.add_argument("--info-file", help="also write --scheme-info output to this path")
+    ap.add_argument("--summary-file",
+                    help="write the reply body, derived from the validated rows, to this path")
     ap.add_argument("--no-validate", action="store_true", help="skip the consistency pass (testing only)")
     args = ap.parse_args()
 
@@ -465,6 +571,18 @@ def main():
     if not written:
         written = write_csv(rows, args.out + ".csv")
         print("NOTE: openpyxl unavailable, wrote CSV instead", file=sys.stderr)
+
+    if args.summary_file:
+        try:
+            with open(args.summary_file, "w", encoding="utf-8") as fh:
+                fh.write(build_summary(rows))
+        except OSError as exc:
+            # The sheet is the deliverable; a summary failure must not lose it.
+            print("WARNING: could not write summary file: %s" % exc, file=sys.stderr)
+        else:
+            # Labelled, and printed BEFORE the sheet path, so the last line of
+            # stdout is still the single path to attach exactly as before.
+            print("SUMMARY: %s" % args.summary_file)
 
     print(written)
     return 0
