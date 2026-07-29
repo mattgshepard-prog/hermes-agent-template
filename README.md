@@ -117,3 +117,5 @@ The "Update" button inside the Hermes dashboard is a **no-op on Railway** (it de
 
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com/)
 - UI inspired by [OpenClaw](https://github.com/praveen-ks-2001/openclaw-railway) admin template
+
+<!-- Deploy policy: every service built from this branch must have watchPatterns set to empty. Pushes must never deploy a bot. Upgrades are deliberate: bump RESTART_TRIGGER, knowing it pulls branch HEAD. -->
