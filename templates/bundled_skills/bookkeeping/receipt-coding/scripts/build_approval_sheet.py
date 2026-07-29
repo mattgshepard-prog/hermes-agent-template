@@ -141,6 +141,18 @@ def as_money(value):
         return None
 
 
+def scrub_numbers(text):
+    """Drop every whitespace token that contains a digit.
+
+    Used when the transcript proves the receipt could not be read. Keeps the
+    non-numeric context a bookkeeper needs ("Unleaded gasoline") and removes
+    anything that could be mistaken for a figure taken off the page.
+    """
+    kept = [t for t in str(text or "").split() if not any(c.isdigit() for c in t)]
+    out = re.sub(r"\s{2,}", " ", " ".join(kept))
+    return out.strip(" -/,;:@.")
+
+
 def add_reason(row, text):
     existing = str(row.get("Review Reason") or "").strip()
     row["Review Reason"] = ("%s; %s" % (existing, text)) if existing else text
@@ -216,6 +228,16 @@ def validate(rows, scheme_path):
                              "money and date blanked and routed to %s" % (label, unreadable))
                 for f in ("Subtotal", "Sales Tax", "Tip", "Total", "Date", "Schedule C Line", "Deductible %"):
                     row[f] = ""
+                # On 2026-07-29 the rule above fired correctly on a faded fuel
+                # receipt and the sheet still shipped a Description reading
+                # "Unleaded gasoline 77.77 GAL @ $3.47/gal". The money columns
+                # were blank, so the row looked like a total that was merely
+                # cut off, and 77.77 x 3.47 reconstructs a total that was never
+                # on the page. Blanking the money is not enough while any
+                # column still carries an inferred figure.
+                desc = scrub_numbers(row.get("Description"))
+                row["Description"] = ("%s (amounts unreadable)" % desc if desc
+                                      else "Contents could not be read")
                 row["Suggested Account"] = unreadable
                 row["Read Confidence"] = 0
                 add_reason(row, "Characters on this receipt could not be read; no amount or date can be "
@@ -277,6 +299,26 @@ def validate(rows, scheme_path):
                     row["Schedule C Line"] = ""
                     add_reason(row, "Total could not be verified against a subtotal")
                     acct = ambiguous
+
+        # 3d. Some accounts are never clean on the strength of a receipt alone.
+        #
+        # IRC 274(d) requires business purpose and attendees for meals. A
+        # receipt shows what was bought, never why or with whom, so no meal
+        # can be substantiated from the image. The scheme said so in prose
+        # ("Business purpose and attendees must be recorded") and the model
+        # honoured it on 2026-07-28 and dropped it on 2026-07-29, returning
+        # Needs Review: No on a Panera receipt. Prose has now failed on this
+        # rule twice, so it moves into the validator.
+        #
+        # Driven by requires_substantiation in the scheme rather than an
+        # account name, so adding Travel later is a one-line data change.
+        if acct in accounts and accounts[acct].get("requires_substantiation"):
+            if str(row.get("Needs Review") or "").strip().lower() not in ("yes", "true", "y", "1"):
+                notes.append("%s: %s always needs substantiation, forced Needs Review"
+                             % (label, acct))
+                row["Needs Review"] = "Yes"
+            add_reason(row, "Business purpose and attendees are not on the receipt "
+                            "and must be recorded before this is deductible")
 
         # 4. A fallback row cannot claim high account confidence, and is always flagged.
         if acct in fallbacks:

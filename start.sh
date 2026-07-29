@@ -250,6 +250,71 @@ else
   echo "[start.sh] LLM provider wire skipped (disabled, no LLM_PROVIDER, or no config.yaml yet)."
 fi
 
+# ── Gate agent self-writes behind approval ─────────────────────────────────
+# Root cause (found 2026-07-29 on beths-bot): the framework's background
+# self-improvement review (agent/background_review.py) rewrote the live
+# receipt-coding SKILL.md mid-run and mentioned it afterwards in a one-line
+# notice. The edit was correct on its merits, but three things were not:
+#   1. The volume silently diverged from the commit Railway still reports as
+#      deployed (16,868 bytes in git vs 18,747 on the volume), which voids the
+#      cold-deploy gate — what passed is no longer what runs.
+#   2. The change existed only on the volume, so the next
+#      HERMES_RESEED_SKILLS=1 would discard it without warning.
+#   3. On a client bot the sender can steer the agent by email, so the only
+#      thing between a client's message and a permanent rule change was the
+#      sender allowlist.
+#
+# hermes_cli/config.py carries a per-subsystem boolean, default false ("write
+# freely"). With write_approval=true a background-review write is STAGED
+# instead of committed, and reviewed with /skills pending, /skills diff <id>,
+# /skills approve <id>, /skills reject <id>; memory stages the same way and is
+# reviewed with /memory pending. The discovery is kept, the surprise is not.
+#
+# On by default. HERMES_SKIP_WRITE_APPROVAL=1 opts out, which is what Garry
+# wants while the auto-apply path is deliberately being proven.
+#
+# The value is set with `hermes config set` (the official atomic write path),
+# then READ BACK and corrected if it landed as the string "true" rather than a
+# boolean, because a truthy string would pass a config read while a strict
+# `is True` check would not. Failure-tolerant: never blocks gateway boot.
+if [ "${HERMES_SKIP_WRITE_APPROVAL:-0}" != "1" ] && [ -f /data/.hermes/config.yaml ]; then
+  for _wa_key in skills.write_approval memory.write_approval; do
+    hermes config set "${_wa_key}" true >/dev/null 2>&1 || true
+  done
+  unset _wa_key
+  if python - <<'PYEOF_WA'
+import sys
+import yaml
+
+PATH = "/data/.hermes/config.yaml"
+WANT = [("skills", "write_approval"), ("memory", "write_approval")]
+
+with open(PATH, encoding="utf-8") as fh:
+    cfg = yaml.safe_load(fh) or {}
+
+fixed = []
+for section, key in WANT:
+    sub = cfg.setdefault(section, {}) or {}
+    cfg[section] = sub
+    if sub.get(key) is not True:      # missing, string "true", or false
+        sub[key] = True
+        fixed.append("%s.%s" % (section, key))
+
+if fixed:
+    with open(PATH, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
+    print("corrected: " + ", ".join(fixed))
+sys.exit(0)
+PYEOF_WA
+  then
+    echo "[start.sh] Write-approval gate ON: agent self-writes to skills and memory are staged for review."
+  else
+    echo "[start.sh] WARNING: could not verify write_approval; self-writes may commit unreviewed."
+  fi
+else
+  echo "[start.sh] Write-approval gate skipped (HERMES_SKIP_WRITE_APPROVAL=1 or no config.yaml yet)."
+fi
+
 # ── Seed Honcho peer pin (non-destructive) ──────────────────────────────────
 # Root cause (found 2026-07-16 on Garry CoS): without a honcho.json, each
 # gateway platform mints its own runtime peer, splitting one operator into

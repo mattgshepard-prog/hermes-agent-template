@@ -1,7 +1,7 @@
 {
   "scheme_id": "schedule-c-2025-default",
   "display_name": "Schedule C (Sole Proprietor) Default",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "source": "IRS Schedule C (Form 1040) 2025, verified against https://www.irs.gov/pub/irs-pdf/f1040sc.pdf on 2026-07-28",
   "entity_type": "sole_proprietor_or_smllc",
   "notes": "This is a REFERENCE scheme, not a client chart of accounts. Swap this file to code against any client's own COA. Only 'account', 'auto_assign' and 'confidence_floor' are required per entry; every other field is optional and used only to improve suggestions.",
@@ -351,6 +351,7 @@
       "account": "Deductible Meals",
       "schedule_c_line": "24b",
       "auto_assign": true,
+      "requires_substantiation": true,
       "deductible_pct": 50,
       "vendor_hints": [
         "restaurant",
@@ -536,7 +537,7 @@
     "rule": "Never compute a count. Read reference/scheme_info.txt, which is regenerated from this file on every boot, and quote it. If that file is missing, say the count could not be verified and give no number.",
     "file": "/data/.hermes/skills/bookkeeping/receipt-coding/reference/scheme_info.txt"
   },
-  "enforcement": "Scheme consistency is enforced by the renderer's validation pass, not by trust. Rows that contradict this file are corrected before the sheet is written.",
+  "enforcement": "Scheme consistency is enforced by the renderer's validation pass, not by trust. Rows that contradict this file are corrected before the sheet is written. always_flag_for_review is documentation for the agent; conditions that must hold regardless of what the agent decides are implemented as checks in build_approval_sheet.py. requires_substantiation is one such check: an account carrying it can never return Needs Review: No.",
   "personal_indicators": [
     "grocer",
     "produce",
