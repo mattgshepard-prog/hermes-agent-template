@@ -1,7 +1,7 @@
 ---
 name: receipt-coding
 description: "Parse receipts and invoices arriving by email or chat, extract the transaction fields, code each one to an account in the active coding scheme, and return an approval sheet the bookkeeper reviews before anything is entered. Codes against a swappable scheme file, defaulting to IRS Schedule C reference categories. Never writes to an accounting system."
-version: 1.8.0
+version: 1.9.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -171,6 +171,12 @@ The renderer independently checks line items against the assigned account and re
 
 ## Hard rules
 
+- **If you did not see an image, you have no information about it. Stop.** When an attachment arrives marked `VISION UNAVAILABLE`, or with any note saying the image could not be read, seen, or analysed, that file is unreadable to you. Do not code it. Do not infer a vendor, a date, an amount, or a line item for it, and do not carry on with the rest of the batch as though the count were complete.
+
+    Abort the whole batch. Reply naming every file that could not be read, say plainly that no receipt could be coded because the images did not arrive, and send no sheet. A partial sheet invites the reader to assume the missing ones simply had nothing on them.
+
+    On 2026-07-29 this rule did not exist. Six images failed to load, the model was told so six times, and it produced a seven-row sheet at read confidence 95 in which six rows were invented, three of them for vendors that were not in the batch at all: Staples, Amazon and Uber. Every downstream check passed, because they all verify what was reported rather than whether anything was seen. Nothing below this line protects against a confident invention. This rule is the only thing that does.
+
 - **Report `read_confidence` honestly, and know that it now acts.** Below the scheme's `read_confidence_floor` the renderer blanks that row's money, date and description outright and routes it to `Uncategorized Expense`. This is deliberate: on 2026-07-29 a receipt was scored 25, flagged, and still carried an invented date into the sheet and the email. Do not inflate the number to keep a row looking complete, and do not deflate it to be safe, because a low score erases real data on a receipt you actually could read.
 - **The reply body comes from `--summary-file`, verbatim.** You do not write it.
 
@@ -206,8 +212,11 @@ The renderer independently checks line items against the assigned account and re
 - **A `?` beside a digit** in the transcript blanks money, date, and description. That is the validator proving the numbers were guessed, not a bug.
 - **Low `read_confidence` blanks the same fields**, independently, with no `?` required. Preserving `??.??` while quietly resolving `07/1?/2026` to `07/17/2026` is the exact failure this catches.
 - **The reply body is generated** by `--summary-file`. Writing your own reintroduces figures the validator removed.
+- **`VISION UNAVAILABLE` on any attachment aborts the batch.** No sheet, no partial coding. The validator cannot detect an invented receipt, because an invented receipt contradicts nothing.
 
 ## Changelog
+
+v1.9.0 -- Added the abort-on-blindness rule, after the worst failure this skill has produced. On 2026-07-29 image routing fell back to text mode on a fresh session, vision_analyze failed on all six images because task=vision resolves to unfunded OpenRouter and unauthenticated Nous, and the model received six explicit "I could not see this image" notices. It then returned a complete seven-row approval sheet at read confidence 95 in which only the PDF row was real; the other six were invented, including Staples, Amazon and Uber, none of which were in the batch. No existing check fired: the "?" rule needs a "?" in the transcript and the confidence floor needs low confidence, and a confident fabrication produces neither. The routing had been alternating between native and text run to run, and earlier text-mode runs stayed accurate only because they reused a native read from earlier in the same session. The durable fix is agent.image_input_mode pinned to native in start.sh; this rule covers the case where that pin is bypassed -- 2026-07-29
 
 v1.8.0 -- Low read confidence became an independent redaction trigger, and the reply body became a generated artifact. Both come from one run on 2026-07-29 where the sheet was correct and the email was not. The model scored its own reading of a faded fuel receipt at 25, flagged it, faithfully preserved "??.??" twice, and in the same transcript resolved "07/1?/2026" to "07/17/2026" and "3.4?" to "3.47" -- fully occluded tokens survive because there is nothing to complete, while a token missing one character from a rigid format gets completed. The "?" rule therefore depends on the model volunteering evidence against itself, which cannot be relied on. Confidence below the scheme floor now blanks money, date and description on its own. The old low-confidence rule also carried a guard that skipped any row already routed to the unreadable fallback, so the clearest case was the one it ignored; that guard is gone. The covering email is now built from the validated rows by the renderer rather than written from the model's own notes, after an invented date survived into the reply despite being blanked on the sheet -- 2026-07-29
 

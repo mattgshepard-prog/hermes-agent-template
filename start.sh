@@ -250,6 +250,87 @@ else
   echo "[start.sh] LLM provider wire skipped (disabled, no LLM_PROVIDER, or no config.yaml yet)."
 fi
 
+# ── Pin image input to native, and make blindness loud ─────────────────────
+# On 2026-07-29 22:04 UTC beths-bot invented six of seven receipts, including
+# three vendors that were never in the batch, at read confidence 95. Nothing
+# in the validation stack caught it, because every check there is downstream
+# of perception: the "?" rule needs a "?" in the transcript and the confidence
+# floor needs low confidence. A confident fabrication satisfies both.
+#
+# Cause: agent.image_input_mode defaults to "auto", which consults models.dev
+# metadata for supports_vision and silently falls back to text mode when that
+# lookup does not resolve. The log shows it flipping between native and text
+# run to run with no deploy in between:
+#   16:26 native (accurate)  18:33 text (accurate, reused an earlier native
+#   read in the same session)  21:33 native (accurate)  22:04 text (fresh
+#   session, nothing to reuse, fabricated).
+# Text mode then calls vision_analyze, which resolves task=vision to
+# OpenRouter (no credit) and Nous (no auth) on this bot, so it returns nothing.
+# The model was handed six "I couldn't quite see it" notices and filled the
+# gap. Session hygiene did not cause this; it removed the accidental cover.
+#
+# Pinning the mode removes the metadata lookup and the fallback entirely.
+# model.supports_vision is set too as the documented per-model shortcut, so
+# the capability is declared rather than inferred.
+#
+# auxiliary.vision.provider is deliberately NOT set: its valid values are
+# auto|openrouter|nous|codex|custom, with no anthropic option, so there is no
+# way to route vision through the funded key. Native attachment is the fix,
+# not a better auxiliary provider.
+#
+# HERMES_SKIP_VISION_PIN=1 opts out.
+if [ "${HERMES_SKIP_VISION_PIN:-0}" != "1" ] && [ -f /data/.hermes/config.yaml ]; then
+  hermes config set agent.image_input_mode native >/dev/null 2>&1 || true
+  hermes config set model.supports_vision true    >/dev/null 2>&1 || true
+  if python - <<'PYEOF_VP'
+import sys
+import yaml
+
+PATH = "/data/.hermes/config.yaml"
+with open(PATH, encoding="utf-8") as fh:
+    cfg = yaml.safe_load(fh) or {}
+
+fixed = []
+agent = cfg.setdefault("agent", {}) or {}
+cfg["agent"] = agent
+if agent.get("image_input_mode") != "native":
+    agent["image_input_mode"] = "native"
+    fixed.append("agent.image_input_mode")
+
+model = cfg.setdefault("model", {}) or {}
+cfg["model"] = model
+if model.get("supports_vision") is not True:   # missing, false, or "true"
+    model["supports_vision"] = True
+    fixed.append("model.supports_vision")
+
+if fixed:
+    with open(PATH, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
+    print("corrected: " + ", ".join(fixed))
+sys.exit(0)
+PYEOF_VP
+  then
+    echo "[start.sh] Image input pinned to native; attachments go to the model as pixels."
+  else
+    echo "[start.sh] WARNING: could not verify image_input_mode. Images may be routed to a broken vision path."
+  fi
+else
+  echo "[start.sh] Vision pin skipped (HERMES_SKIP_VISION_PIN=1 or no config.yaml yet)."
+fi
+
+# Two framework patches, both idempotent and both declining to act if upstream
+# changes the lines they anchor to:
+#   - routing fallback: a failed routing decision honours the explicit
+#     agent.image_input_mode instead of silently choosing text, and reports at
+#     WARNING instead of DEBUG. This is the defect that made the mode flip
+#     run to run with no visible reason.
+#   - failure notice: if text mode runs anyway and vision returns nothing, the
+#     model is told plainly that it has not seen the image.
+if [ "${HERMES_SKIP_VISION_PIN:-0}" != "1" ]; then
+  python /app/boot/patch_image_routing_fallback.py || true
+  python /app/boot/patch_vision_unavailable_notice.py || true
+fi
+
 # ── Let slash commands reach the dispatcher over email ─────────────────────
 # gateway/platforms/email.py prefixes inbound text with "[Subject: ...]" for
 # any subject not starting with "Re:". The dispatcher only recognises a slash
