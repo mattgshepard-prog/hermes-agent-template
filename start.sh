@@ -250,6 +250,32 @@ else
   echo "[start.sh] LLM provider wire skipped (disabled, no LLM_PROVIDER, or no config.yaml yet)."
 fi
 
+# ── Let slash commands reach the dispatcher over email ─────────────────────
+# gateway/platforms/email.py prefixes inbound text with "[Subject: ...]" for
+# any subject not starting with "Re:". The dispatcher only recognises a slash
+# command when the text BEGINS with the prefix, so on a new email /reset,
+# /new and friends fall through to the agent as ordinary conversation.
+#
+# Verified on beths-bot 2026-07-29 21:13 UTC: a body of exactly "/reset" got
+# the reply "Context reset. Ready for your next request." while sessions.json
+# still showed the same session_id, the same created_at, and
+# is_fresh_reset: false. Nothing reset. The agent inferred what a
+# confirmation sounds like and wrote one, so the user is told it worked and
+# has no way to see that it did not.
+#
+# email.py ships inside the hermes-agent package in the image, not in this
+# repo, so there is no source file to commit the change to and it has to be
+# applied at boot, before the gateway starts. The patcher is idempotent,
+# anchored to one exact line, declines to act if an upgrade changes that
+# line, and never fails the boot.
+#
+# HERMES_SKIP_EMAIL_SLASH_PATCH=1 opts out.
+if [ "${HERMES_SKIP_EMAIL_SLASH_PATCH:-0}" != "1" ]; then
+  python /app/boot/patch_email_slash_commands.py || true
+else
+  echo "[start.sh] Email slash-command patch skipped (HERMES_SKIP_EMAIL_SLASH_PATCH=1)."
+fi
+
 # ── Gate agent self-writes behind approval ─────────────────────────────────
 # Root cause (found 2026-07-29 on beths-bot): the framework's background
 # self-improvement review (agent/background_review.py) rewrote the live
