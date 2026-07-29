@@ -119,3 +119,4 @@ The "Update" button inside the Hermes dashboard is a **no-op on Railway** (it de
 - UI inspired by [OpenClaw](https://github.com/praveen-ks-2001/openclaw-railway) admin template
 
 <!-- Deploy policy: every service built from this branch must have watchPatterns set to empty. Pushes must never deploy a bot. Upgrades are deliberate: bump RESTART_TRIGGER, knowing it pulls branch HEAD. -->
+<!-- Verified 2026-07-29: an empty watchPatterns array does not persist and does not stop auto-deploy. A sentinel pattern that matches no file does. -->
