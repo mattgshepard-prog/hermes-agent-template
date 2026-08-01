@@ -1,7 +1,7 @@
 ---
 name: learning-writer
 description: "Nightly self-learning sweep: read the day's session transcripts, extract and score lessons 0-100, and route by bucket. Every lesson becomes a pending row in the Notion Learning Log, tool-specific ones linked to the target skill in the Skill Registry. The ingester processes them and is the only component that writes to Honcho."
-version: 2.4.0
+version: 2.5.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -43,6 +43,8 @@ Runs primarily on the Cowork surface (where the day's transcripts live). Hermes 
 4. Write every lesson to the Learning Log as a `pending` row, behavioral ones included. The ingester routes behavioral rows to Honcho on its next run.
 
 If nothing is worth recording, write nothing and exit. An empty day is fine.
+
+**Inline captures.** When the operator invoked the writer mid-session (via "log this now" or during debugging), those lessons are already in the Learning Log as pending rows with that session as the source. The nightly sweep should not re-extract them. If you see a recent session that wrote its own lessons inline, verify the Learning Log already has them (check the pre-pass script output or query pending rows by source/date), then skip that session. Do not duplicate lessons already captured.
 
 ## Version boundaries (check before calling anything a violation)
 
@@ -97,25 +99,13 @@ observed evidence.
 
 **behavioral**: anything about the operator as a person, preferences, mental models, business facts, standing instructions. Phrase it as a specific, falsifiable observation, because it becomes a Honcho conclusion. Write it as a Learning Log row with `Bucket = behavioral`, no `Target Skill`, and `Status = pending`. The ingester performs the Honcho write and stamps the row `ingested` with the returned `conclusion_id`. Do not attempt a Honcho write here and do not hold the lesson back if Honcho looks unavailable; the row is the handoff.
 
+**Critical disambiguation**: When the operator corrects how an assistant should behave (tone, signature, negotiation style, format preferences), these are **behavioral conclusions about the operator's preferences**, not tool-specific edits to the assistant's skill. Test: Is this a fact about how the operator wants things done (behavioral) or a procedural change to how a skill executes a step (tool-specific)? Example: "Garry should sign emails with full title" = behavioral (operator's communication preference), not tool-specific (Garry skill procedural edit). When the operator corrects assistant behavior, that reveals the operator's preferences.
+
 **tool-specific**: a procedural edit to one named skill. Becomes a Learning Log row with `Bucket = tool-specific` and a `Target Skill` relation to that skill's Registry page. The `Lesson` title must be self-contained: the ingester acts on it without the transcript. Resolve the target skill's page id first:
 `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py find-skill "Exact Skill Name"`
 If the name matches no skill, set `Bucket = unsorted` (do not guess a target) and let the ingester flag it.
 
 **unsorted**: you cannot cleanly classify it. Write it `unsorted` with no target; the ingester routes it to needs-approval for the operator to triage. Prefer unsorted over a wrong guess.
-
-**Behavioral vs tool-specific, when the operator corrects an assistant.** When the
-operator corrects how an assistant should behave (tone, signature, greeting,
-negotiation style, phrasing), that is a behavioral conclusion about the
-operator's preferences, not a tool-specific edit to the assistant's skill.
-
-The test: is this a fact about how Matt wants things done (behavioral), or a
-procedural change to how a skill executes (tool-specific)?
-
-Example: "Garry should sign with his full title" is behavioral, a Matt
-preference. It is not a tool-specific edit to a Garry skill.
-
-Apply this test before falling back to `unsorted`. A correction about an
-assistant's manner is classifiable, so classify it.
 
 ## Writing rows
 
@@ -142,4 +132,6 @@ Row shape: `lesson`, `score`, `bucket`, `target_skill_id` (for tool-specific), `
 v2.1.0 -- operator-neutral wording for Bot Builder client baseline; logic and fence unchanged -- 2026-07-19
 v2.2.0 -- behavioral lessons now become `pending` Learning Log rows instead of direct Honcho writes, because the documented Honcho MCP path does not exist on this surface and both bots improvised around it (Bailey dumped to unsorted 2026-07-24; Garry wrote behavioral rows against its own rule, which is the only reason any conclusion exists). The ingester is now the single Honcho writer. write_learnings.py takes `--file PATH` because the piped form is refused by the command scanner. Step 1 names session_search as the Hermes transcript path. Scoring and bucketing unchanged -- 2026-07-26
 v2.3.0 -- stop manufacturing violations out of version bumps. The writer now verifies that a rule existed at run time before calling any observed behavior a violation, using the SKILL.md embedded in that run's own cron output rather than the file currently on disk. A violated-then-corrected pair across two runs is forbidden unless both runs are confirmed to have loaded the same version. Root cause: on 2026-07-26 the writer logged a score-85 lesson accusing the ingester of violating a v2.6.0 [SILENT] rule at 21:10; the 21:11 cron output contains zero references to that rule and the 22:24 output contains seven, so the guard landed between the runs and no defect ever existed. Scoring, bucketing, and the Honcho boundary unchanged -- 2026-07-27
-v2.4.0 -- add the behavioral-vs-tool-specific test for operator corrections about an assistant's manner (tone, signature, greeting, negotiation style). These are behavioral conclusions about the operator, not procedural edits to the assistant's skill, and must be classified rather than dropped to `unsorted`. Root cause: on 2026-07-31 the writer logged a score-95 lesson about Garry's required email structure as `unsorted` with no target, which stalled it at needs-approval despite the score. Scoring, the Honcho boundary, and the version-boundary check unchanged -- 2026-08-01
+v2.4.0 -- disambiguate assistant-behavior corrections as behavioral (operator preferences) not tool-specific. Bucketing section now clarifies: when the operator corrects how an assistant should behave (tone, signature, negotiation style), these are conclusions about the operator's preferences, not procedural edits to the assistant skill. Test added: is this a fact about how the operator wants things done (behavioral) or a change to how a skill executes (tool-specific)? Root cause: on 2026-07-31, 3 high-scoring lessons (95, 90, 85) about Garry's signature, tone, and negotiation approach were mis-bucketed as unsorted when they were clearly operator communication preferences (behavioral). Scoring unchanged -- 2026-07-31
+v2.5.0 -- added inline capture deduplication guard: when the operator invoked the writer mid-session (log this now, during debugging), those lessons are already in the Learning Log and the nightly sweep should skip that session to avoid duplicates. Root cause: 2026-08-01 nightly sweep correctly returned [SILENT] after finding July 31 lessons were captured inline during debugging at 14:16, but the skill had no explicit guidance on this pattern -- 2026-08-01
+v2.4.0 -- disambiguate assistant-behavior corrections as behavioral (operator preferences) not tool-specific. Bucketing section now clarifies: when the operator corrects how an assistant should behave (tone, signature, negotiation style), these are conclusions about the operator's preferences, not procedural edits to the assistant skill. Test added: is this a fact about how the operator wants things done (behavioral) or a change to how a skill executes (tool-specific)? Root cause: on 2026-07-31, 3 high-scoring lessons (95, 90, 85) about Garry's signature, tone, and negotiation approach were mis-bucketed as unsorted when they were clearly operator communication preferences (behavioral). Scoring unchanged -- 2026-07-31
