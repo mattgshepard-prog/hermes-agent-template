@@ -1,7 +1,7 @@
 ---
 name: learning-ingester
 description: "The assistant's self-learning ingester, runnable two ways: the nightly cron, or on demand when the operator says 'go learn' on Telegram. Reads pending rows from the Notion Learning Log, applies tool-specific skill edits under a two-layer fence (score plus the target skill's Self Revision setting), routes behavioral lessons to Honcho, sets each row's status, and reports what was ingested, flagged for approval, or rejected. Cron runs email the operator a digest; manual runs reply in the chat."
-version: 2.7.0
+version: 2.8.0
 author: Matt Shepard
 license: MIT
 platforms: [linux, macos, windows]
@@ -52,16 +52,19 @@ Do not confuse this with `log-this-now`. That skill captures a NEW lesson from t
 - Digest sender: `scripts/send_digest.py` (the ONLY path for emailing the digest; the cron scheduler cannot deliver to email)
 - Notion access: the script's own HTTP calls, or the `notion` skill
 - Cron delivery: the scheduler delivers to chat only. The digest is emailed by `send_digest.py` when a mailbox is configured, otherwise it goes to chat.
+- Reference: `references/silent-backlog-bug-2026-07-31.md` documents the 5-day [SILENT] failure and why existing guards didn't catch it (control flow issue)
 
 ## How it runs
 
 1. Run the pre-pass: `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py`
    It prints pending rows: `{page_id, lesson, score, bucket, target_skill_ids, rationale, source}`.
-2. Process each row through the fence below.
-3. For each row, set its `Status` with `set-status`. Setting `ingested` stamps the `Ingested` date in the same call.
-4. Deliver the report (final step): email on a cron run, in-chat reply on a manual run.
+2. BEFORE processing anything, check the standing backlog: `HERMES_HOME=/data/.hermes python /data/.hermes/skills/self-learning/learning-ingester/scripts/ingest_learning_log.py count-waiting`
+   This returns `{"waiting": N}` for rows in `needs-approval` status. You MUST check this before deciding whether to return `[SILENT]`.
+3. Process each pending row through the fence below.
+4. For each row, set its `Status` with `set-status`. Setting `ingested` stamps the `Ingested` date in the same call.
+5. Deliver the report (final step): email on a cron run, in-chat reply on a manual run.
 
-If `count` is 0, do NOT stay silent. Send the steady-state report through the run's delivery channel, then exit.
+If `count` is 0 (no new pending rows), check the `waiting` count from step 2. If `waiting > 0`, you MUST send a digest stating the standing backlog (see digest section). Only return `[SILENT]` when BOTH pending count is 0 AND waiting count is 0 AND email was successfully sent.
 
 ## The fence (two layers: Bucket/Score, then the target skill's Self Revision)
 
@@ -198,6 +201,12 @@ No em dashes. Short.
 - No motivational filler. State what happened.
 - Short and direct.
 
+## Pitfalls
+
+**When the operator asks why lessons weren't auto-adopted, explain the fence FIRST before taking action.** On 2026-07-30 the operator asked "Why?" about 4 items needing approval. The correct response sequence is: (1) explain the fence reasons (high blast radius, unsorted bucket, etc.), (2) offer to approve them, (3) execute. Do NOT jump straight to approval without explaining the gate logic — the operator is asking to understand the system, not just to clear the queue.
+
+**The `[SILENT]` rule was violated for 5+ days (2026-07-27 through 2026-07-31).** The ingester checked only for new pending rows, found zero, and returned `[SILENT]` even though 4 rows sat in needs-approval status from previous runs. Root cause: the "How it runs" section said "if count is 0, send steady-state report" but agents interpreted zero NEW pending rows as permission to stay silent, ignoring the standing backlog. Fixed 2026-07-31: step 2 now mandates checking count-waiting BEFORE processing, and the [SILENT] conditions are explicit (pending=0 AND waiting=0 AND email sent). The digest section already said "always state standing backlog" and "never [SILENT] while anything is waiting" but those rules were in the wrong place to catch the mistake at decision time.
+
 ## Idempotency
 
 Every processed row must end as `ingested`, `needs-approval`, or `rejected`. A row left `pending` will be re-processed tomorrow. If a Notion write fails, retry once; if it still fails, leave the row `pending` (retried next run, not lost) and note the failure in the digest. This same guarantee is what makes manual runs repeat-safe.
@@ -215,3 +224,4 @@ v2.4.0 -- Honcho write now uses `write --file PATH` instead of piping stdin, bec
 v2.7.0 -- stop queueing rows that are already done. Before applying the fence, the ingester now reads the target skill and closes the row if the lesson is already implemented, but ONLY when it can quote the implementing line verbatim, because a wrong close silently destroys a lesson. Skills on the claude surface are not readable from here and are never closed this way. Adds a dedupe pass that surfaces contradicting rows on the same skill as a pair and applies neither. Adds rejection for changelog entries, which record what happened rather than changing what happens next and therefore can never close by being applied. Root cause: a 44-row backlog on 2026-07-26 where roughly half was already implemented, four were superseded reversals, and several were changelog entries. Fence unchanged -- 2026-07-26
 v2.5.0 -- `set-status PAGE_ID ingested` now writes Status and the `Ingested` date in one Notion PATCH, so a row cannot be marked ingested with a blank date when the agent completes the first call and skips the second (observed 2026-07-26); stamp-ingested kept as legacy; fence unchanged -- 2026-07-26
 v2.6.0 -- the digest now actually reaches the operator. New scripts/send_digest.py sends it over SMTP as an explicit step, because the cron scheduler cannot deliver to email (only platforms declaring a cron_deliver_env_var get cron delivery, and the email platform declares none), so the previous "email the operator" instruction was never reachable. `[SILENT]` is now forbidden while anything is waiting, since the scheduler skips delivery on it and two consecutive runs reported nothing while 17 rows sat unapproved. Every digest now states the standing needs-approval total via the new count-waiting command, so a quiet day cannot look like a day with a large backlog. Credentials are read from .env not os.environ, because the terminal tool scrubs subprocess env. Fence unchanged -- 2026-07-26
+v2.8.0 -- fix 5-day silent-failure bug where [SILENT] was returned despite 4 rows waiting on approval. "How it runs" step 2 now mandates checking count-waiting BEFORE processing anything, and the [SILENT] conditions are explicit in step 5 (pending=0 AND waiting=0 AND email sent). Root cause: v2.6.0 added the rule "never [SILENT] while anything is waiting" but it lived only in the digest section, too late to catch the decision; agents interpreted zero NEW pending rows as permission to stay silent. Observed 2026-07-27 through 2026-07-31: all cron runs returned [SILENT] while count-waiting showed 4. Fence unchanged -- 2026-07-31
