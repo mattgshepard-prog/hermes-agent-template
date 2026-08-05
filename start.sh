@@ -58,7 +58,7 @@ KILOCODE_API_KEY OLLAMA_API_KEY AZURE_FOUNDRY_API_KEY AZURE_FOUNDRY_BASE_URL \
 CUSTOM_PROVIDER_API_KEY CUSTOM_PROVIDER_BASE_URL CUSTOM_PROVIDER_NAME \
 LLM_PROVIDER LLM_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL \
 PARALLEL_API_KEY FIRECRAWL_API_KEY TAVILY_API_KEY FAL_KEY BROWSERBASE_API_KEY \
-BROWSERBASE_PROJECT_ID GITHUB_TOKEN VOICE_TOOLS_OPENAI_KEY HONCHO_API_KEY \
+BROWSERBASE_PROJECT_ID GITHUB_TOKEN VOICE_TOOLS_OPENAI_KEY HONCHO_API_KEY HONCHO_WORKSPACE \
 TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
 SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED EMAIL_ADDRESS EMAIL_PASSWORD \
 EMAIL_IMAP_HOST EMAIL_SMTP_HOST EMAIL_ALLOWED_USERS EMAIL_HOME_ADDRESS \
@@ -449,7 +449,11 @@ if not peer:
     raise SystemExit(1)
 path = "/data/.hermes/honcho.json"
 with open(path, "w", encoding="utf-8") as f:
-    json.dump({"peerName": peer, "pinUserPeer": True}, f, indent=2)
+    doc = {"peerName": peer, "pinUserPeer": True}
+    ws = os.environ.get("HONCHO_WORKSPACE", "").strip()
+    if ws:
+        doc["workspace"] = ws
+    json.dump(doc, f, indent=2)
 os.chmod(path, 0o600)
 PYEOF2
   then
@@ -470,6 +474,57 @@ fi
 # Garry's live jobs were registered by hand on 2026-07-14; a fresh volume now
 # gets them automatically. Failure-tolerant: never blocks gateway boot.
 python /app/boot/seed_cron_jobs.py || echo "[start.sh] WARNING: cron job seed failed; continuing boot."
+
+# -- Seed Honcho workspace into honcho.json (every boot) --------------------
+# Root cause (found 2026-08-05 across Garry CoS, Sully, Beth's Bot, Bailey):
+# the plugin resolves workspace as
+#   host_block.get("workspace") or raw.get("workspace") or resolved_host
+# and resolved_host defaults to "hermes". The peer-pin seed above wrote only
+# peerName and pinUserPeer, so every bot on a fresh volume fell through to
+# "hermes" and shared one workspace with Garry. Sully returned Garry's
+# executive-assistant profile on 2026-07-28 for exactly this reason.
+#
+# A per-bot API key does NOT fix this. Isolation in Honcho is per workspace,
+# and a second key inside the same account addresses the same data. The
+# durable fix is a workspace-scoped key PLUS this config, so a
+# misconfiguration is refused by the credential rather than silently
+# writing into another bot's memory.
+#
+# Written at ROOT level, never as a host block: bool(host_block) also drives
+# _explicitly_configured in the plugin, and this change must not alter
+# enablement as a side effect. Root placement verified live 2026-08-05.
+#
+# Rewritten on EVERY boot from HONCHO_WORKSPACE so the Railway variable stays
+# the single source of truth. Only touches an EXISTING honcho.json.
+# HERMES_SKIP_HONCHO_WORKSPACE_SEED=1 opts out. Never blocks gateway boot.
+if [ "${HERMES_SKIP_HONCHO_WORKSPACE_SEED:-0}" != "1" ] && [ -n "${HONCHO_WORKSPACE:-}" ] \
+   && [ -f /data/.hermes/honcho.json ]; then
+  if python - <<'PYEOF_WS' >/dev/null 2>&1
+import json, os
+path = "/data/.hermes/honcho.json"
+ws = os.environ.get("HONCHO_WORKSPACE", "").strip()
+if not ws:
+    raise SystemExit(1)
+with open(path, encoding="utf-8") as f:
+    data = json.load(f) or {}
+if not isinstance(data, dict):
+    raise SystemExit(1)
+if data.get("workspace") != ws:
+    data["workspace"] = ws
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+PYEOF_WS
+  then
+    echo "[start.sh] Honcho workspace pinned in honcho.json (${HONCHO_WORKSPACE})."
+  else
+    echo "[start.sh] WARNING: honcho.json workspace seed failed; continuing boot."
+  fi
+else
+  echo "[start.sh] Honcho workspace seed skipped (disabled, no HONCHO_WORKSPACE, or no honcho.json)."
+fi
 
 # -- Seed Honcho apiKey into honcho.json (every boot) -----------------------
 # Root cause (confirmed 2026-07-25 on Garry CoS and Bailey): the agent's
