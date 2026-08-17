@@ -62,6 +62,7 @@ BROWSERBASE_PROJECT_ID GITHUB_TOKEN VOICE_TOOLS_OPENAI_KEY HONCHO_API_KEY HONCHO
 TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
 SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED EMAIL_ADDRESS EMAIL_PASSWORD \
 EMAIL_IMAP_HOST EMAIL_SMTP_HOST EMAIL_ALLOWED_USERS EMAIL_HOME_ADDRESS \
+EMAIL_SMTP_PORT EMAIL_PRESERVE_CC EMAIL_OUTBOUND_ALLOWED \
 MATTERMOST_URL MATTERMOST_TOKEN MATRIX_HOMESERVER \
 MATRIX_ACCESS_TOKEN MATRIX_USER_ID GATEWAY_ALLOW_ALL_USERS ADMIN_USERNAME \
 ADMIN_PASSWORD COMPOSIO_API_KEY COMPOSIO_USER_ID NOTION_TOKEN DIGEST_EMAIL_TO \
@@ -356,6 +357,25 @@ if [ "${HERMES_SKIP_EMAIL_SLASH_PATCH:-0}" != "1" ]; then
   python /app/boot/patch_email_slash_commands.py || true
 else
   echo "[start.sh] Email slash-command patch skipped (HERMES_SKIP_EMAIL_SLASH_PATCH=1)."
+fi
+
+# ── Cc preservation and outbound send (email-cc-and-outbound-v1) ───────────────
+# patch_email_cc.py teaches the vendored adapter to read Cc inbound and
+# carry it on the reply. Inert unless EMAIL_PRESERVE_CC=1.
+#
+# install_outbound_send.py writes /data/.hermes/tools/send_to.py, the only
+# path by which this agent can mail an address it did not receive mail
+# from. Its allowlist FAILS CLOSED: empty or unset means send to nobody.
+# Note this is the opposite of EMAIL_ALLOWED_USERS, which fails OPEN.
+#
+# Both decline rather than break if upstream moves. Both are `|| true` so
+# a refusal cannot block gateway boot.
+if [ "${HERMES_SKIP_EMAIL_CC_PATCH:-0}" != "1" ]; then
+  python /app/boot/patch_email_cc.py || true
+fi
+
+if [ "${HERMES_SKIP_OUTBOUND_SEND:-0}" != "1" ]; then
+  python /app/boot/install_outbound_send.py || true
 fi
 
 # ── Gate agent self-writes behind approval ─────────────────────────────────
