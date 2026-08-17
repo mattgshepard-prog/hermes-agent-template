@@ -36,7 +36,9 @@ cannot perform, addressed to the person who maintains the books.
 
 Prose in a SKILL.md has gone roughly one for four on this stack. So the guard
 is mechanical: the tool refuses to send a body containing forward-looking
-action claims unless --allow-action-claims is passed explicitly. Refusing is
+action claims unless EMAIL_ALLOW_ACTION_CLAIMS=1 is set in the environment.
+The override is deliberately NOT a command-line flag: this agent composes its
+own argv, so a flag would make the guard agent-optional. Refusing is
 the default because the failure mode is silent and lands on real books.
 
 IDEMPOTENCE
@@ -48,6 +50,7 @@ Set HERMES_SKIP_OUTBOUND_SEND=1 to skip installation entirely.
 """
 
 import os
+import shutil
 import sys
 
 DEST_DIR = "/data/.hermes/tools"
@@ -58,7 +61,6 @@ TOOL = r'''#!/usr/bin/env python3
 
 Usage:
   python3 /data/.hermes/tools/send_to.py --to ADDR --subject SUBJ --body-file PATH
-  python3 /data/.hermes/tools/send_to.py --to ADDR --subject SUBJ --body-file PATH --allow-action-claims
 
 Exit codes:
   0  sent
@@ -118,10 +120,6 @@ def main():
                          "inline string: bodies contain quotes and newlines "
                          "that do not survive a shell argument.")
     ap.add_argument("--cc", default="")
-    ap.add_argument("--allow-action-claims", action="store_true",
-                    help="Permit forward-looking claims of bookkeeping action. "
-                         "Only pass this when the claim is true and the action "
-                         "has actually been performed by a human.")
     args = ap.parse_args()
 
     to_addr = args.to.strip().lower()
@@ -162,7 +160,11 @@ def main():
         body = fh.read()
 
     # --- ACTION-CLAIM GUARD ----------------------------------------------
-    if not args.allow_action_claims:
+    # Override lives in the ENVIRONMENT, not on the command line. Bailey
+    # composes her own argv, so a --flag would let her switch her own guard
+    # off. She cannot set Railway variables. Matt can.
+    # When the Xero write path lands, THIS is the switch to flip.
+    if os.getenv("EMAIL_ALLOW_ACTION_CLAIMS", "0") != "1":
         low = body.lower()
         hits = [p for p in ACTION_PATTERNS if p in low]
         if hits:
@@ -175,9 +177,10 @@ def main():
             print("This bot has no write path to QuickBooks or Xero. Rewrite "
                   "the body to describe what SHOULD be entered rather than "
                   "what will be done, for example 'Recommended correction: "
-                  "reclassify the $150 to Leasing Fee'. If a human has "
-                  "actually performed the action, re-run with "
-                  "--allow-action-claims.")
+                  "reclassify the $150 to Leasing Fee'. This guard is "
+                  "operator-controlled: it can only be lifted by setting "
+                  "EMAIL_ALLOW_ACTION_CLAIMS=1 in Railway, not from this "
+                  "command line.")
             return 3
 
     address = os.getenv("EMAIL_ADDRESS", "")
@@ -231,6 +234,97 @@ if __name__ == "__main__":
 '''
 
 
+# =========================================================================
+# Skill install + command allowlist registration
+# =========================================================================
+#
+# A tool nobody is told about is inert. Before this, send_to.py sat on the
+# volume and zero skills referenced it, so the agent had no idea it existed.
+# The skill below is what makes the capability reachable.
+#
+# The allowlist entry is what makes it HANDS-OFF. Verified against
+# tools/approval.py on v2026.6.19: _command_matches_permanent_allowlist does
+# exact match or fnmatch glob, and _has_allowlist_shell_operator refuses the
+# shortcut outright for any command containing \n && || ; & | < > ` or $( .
+# So the glob cannot be chained into something else: a compound command falls
+# back to manual approval no matter what the allowlist says.
+
+SKILL_SRC = "/app/boot/assets/correspondence/SKILL.md"
+SKILL_DST_DIR = "/data/.hermes/skills/bookkeeping/correspondence"
+SKILL_DST = os.path.join(SKILL_DST_DIR, "SKILL.md")
+
+ALLOWLIST_ENTRY = "python3 /data/.hermes/tools/send_to.py *"
+CONFIG = "/data/.hermes/config.yaml"
+
+
+def install_skill():
+    """Copy the correspondence skill onto the volume. Idempotent by content."""
+    if not os.path.exists(SKILL_SRC):
+        print("[install_outbound_send] skill asset missing at %s, skipping" % SKILL_SRC)
+        return
+    try:
+        with open(SKILL_SRC, "r", encoding="utf-8") as fh:
+            want = fh.read()
+        if os.path.exists(SKILL_DST):
+            with open(SKILL_DST, "r", encoding="utf-8") as fh:
+                if fh.read() == want:
+                    print("[install_outbound_send] correspondence skill already current")
+                    return
+        os.makedirs(SKILL_DST_DIR, exist_ok=True)
+        tmp = SKILL_DST + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(want)
+        os.replace(tmp, SKILL_DST)
+        print("[install_outbound_send] installed correspondence skill v1.0.0")
+    except Exception as exc:
+        print("[install_outbound_send] WARNING: skill install failed: %s" % exc)
+
+
+def register_allowlist():
+    """Add the send_to.py glob to command_allowlist so sends do not prompt.
+
+    Scoped to exactly one script path. Compound commands are refused the
+    shortcut by the framework regardless, so this cannot be widened by
+    chaining. The real controls on what can be sent remain in send_to.py
+    itself: the fail-closed recipient allowlist and the action-claim guard,
+    neither of which this entry touches.
+    """
+    if os.getenv("HERMES_SKIP_SEND_ALLOWLIST", "0") == "1":
+        print("[install_outbound_send] allowlist registration skipped "
+              "(HERMES_SKIP_SEND_ALLOWLIST=1); sends will prompt for approval")
+        return
+    if not os.path.exists(CONFIG):
+        print("[install_outbound_send] no config.yaml yet, allowlist not registered")
+        return
+    try:
+        import yaml
+    except Exception:
+        print("[install_outbound_send] pyyaml unavailable, allowlist not registered")
+        return
+    try:
+        with open(CONFIG, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        current = cfg.get("command_allowlist") or []
+        if not isinstance(current, list):
+            print("[install_outbound_send] command_allowlist is not a list, "
+                  "declining to modify")
+            return
+        if ALLOWLIST_ENTRY in current:
+            print("[install_outbound_send] allowlist entry already present")
+            return
+        if not os.path.exists(CONFIG + ".bak-pre-send-allowlist"):
+            shutil.copy2(CONFIG, CONFIG + ".bak-pre-send-allowlist")
+        current.append(ALLOWLIST_ENTRY)
+        cfg["command_allowlist"] = current
+        tmp = CONFIG + ".tmp-send-allowlist"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
+        os.replace(tmp, CONFIG)
+        print("[install_outbound_send] registered allowlist entry: %s" % ALLOWLIST_ENTRY)
+    except Exception as exc:
+        print("[install_outbound_send] WARNING: allowlist registration failed: %s" % exc)
+
+
 def main() -> int:
     if os.getenv("HERMES_SKIP_OUTBOUND_SEND", "0") == "1":
         print("[install_outbound_send] skipped (HERMES_SKIP_OUTBOUND_SEND=1)")
@@ -252,6 +346,9 @@ def main() -> int:
     except Exception as exc:
         print("[install_outbound_send] WARNING: install failed, continuing boot: %s" % exc)
         return 0
+
+    install_skill()
+    register_allowlist()
 
     raw = os.getenv("EMAIL_OUTBOUND_ALLOWED", "").strip()
     n = len([a for a in raw.split(",") if a.strip()])
