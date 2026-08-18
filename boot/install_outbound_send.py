@@ -71,6 +71,10 @@ Exit codes:
   6  refused: body file is outside the permitted body directories
   7  refused: body or subject contains a credential value
 
+Preflight:
+  python3 /data/.hermes/tools/send_to.py --check
+  Reports whether a send could proceed. Names and sources only, no values.
+
 Every attempt, allowed or refused, is appended to the audit log at
 /data/.hermes/logs/outbound_send_audit.log. The audit line is written BEFORE
 the send is attempted, so a crash mid-send still leaves a record.
@@ -155,7 +159,7 @@ def audit(status, to_addr, subject, detail=""):
         pass  # auditing must never be the reason a send fails
 
 
-def load_transport_settings():
+def load_transport_settings(with_sources=False):
     """Return the four transport settings, environment first, .env as fallback.
 
     Values are returned, never printed. Callers must not log them. Only the
@@ -163,14 +167,16 @@ def load_transport_settings():
     secret sitting in .env is not pulled into memory by this function.
     """
     out = {}
+    src = {}
     for key in TRANSPORT_KEYS:
         val = os.getenv(key, "")
         if val:
             out[key] = val
+            src[key] = "process environment"
 
     missing = [k for k in TRANSPORT_KEYS if not out.get(k)]
     if not missing:
-        return out
+        return (out, src) if with_sources else out
 
     try:
         with open(ENV_FILE, "r", encoding="utf-8") as fh:
@@ -187,12 +193,55 @@ def load_transport_settings():
                     v = v[1:-1]
                 if v:
                     out[k] = v
+                    src[k] = "volume .env"
     except FileNotFoundError:
         pass
     except Exception:
         pass  # fall through to the missing-settings error below
 
-    return out
+    return (out, src) if with_sources else out
+
+
+def run_check():
+    """Report whether a send would be able to proceed. Prints NO VALUES.
+
+    This exists because the agent cannot otherwise verify the claim that this
+    script has credentials. Its own environment genuinely lacks them (they are
+    stripped by _HERMES_PROVIDER_ENV_BLOCKLIST), so an instruction saying
+    "trust me, the tool has them" loses to its own direct observation, and it
+    reaches for a shell wrapper that sources .env. That wrapper trips approval
+    and the send stops.
+
+    Evidence beats assertion. This mode is the evidence.
+    """
+    settings, src = load_transport_settings(with_sources=True)
+    print("send_to.py preflight. Names and sources only. No values are printed.")
+    print("")
+    for key in TRANSPORT_KEYS:
+        if settings.get(key):
+            print("  %-18s resolved   (from %s)" % (key, src.get(key, "?")))
+        elif key == "EMAIL_SMTP_PORT":
+            print("  %-18s default    (587)" % key)
+        else:
+            print("  %-18s MISSING" % key)
+
+    raw = os.getenv("EMAIL_OUTBOUND_ALLOWED", "").strip()
+    allowed = [a.strip() for a in raw.split(",") if a.strip()]
+    print("")
+    print("  outbound allowlist  %d address(es)" % len(allowed))
+    claims = "permitted" if os.getenv("EMAIL_ALLOW_ACTION_CLAIMS", "0") == "1" else "enforced"
+    print("  action-claim guard  %s" % claims)
+    print("  body directories    %s" % ", ".join(BODY_ROOTS))
+
+    ready = bool(settings.get("EMAIL_ADDRESS") and settings.get("EMAIL_PASSWORD")
+                 and settings.get("EMAIL_SMTP_HOST") and allowed)
+    print("")
+    if ready:
+        print("READY: yes. Run the send command directly. Do NOT wrap it in "
+              "bash -c and do NOT source the environment file.")
+        return 0
+    print("READY: no. A send would be refused or fail. See the lines above.")
+    return 4
 
 
 def resolve_body_path(raw_path):
@@ -218,15 +267,27 @@ def resolve_body_path(raw_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--to", required=True)
-    ap.add_argument("--subject", required=True)
-    ap.add_argument("--body-file", required=True,
+    ap.add_argument("--check", action="store_true",
+                    help="Report whether a send could proceed, then exit. "
+                         "Prints names and sources only, never values. Use "
+                         "this instead of inspecting the environment yourself.")
+    ap.add_argument("--to")
+    ap.add_argument("--subject")
+    ap.add_argument("--body-file",
                     help="Path to a UTF-8 text file holding the body. Must sit "
                          "under /tmp, /var/tmp or /data/.hermes/outbox. Not an "
                          "inline string: bodies contain quotes and newlines "
                          "that do not survive a shell argument.")
     ap.add_argument("--cc", default="")
     args = ap.parse_args()
+
+    if args.check:
+        return run_check()
+
+    for name, val in (("--to", args.to), ("--subject", args.subject),
+                      ("--body-file", args.body_file)):
+        if not val:
+            ap.error("%s is required unless --check is given" % name)
 
     to_addr = args.to.strip().lower()
 

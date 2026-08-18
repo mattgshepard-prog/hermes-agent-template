@@ -1,7 +1,7 @@
 ---
 name: correspondence
 description: "Send email to Amy or Matt by name. Addresses known."
-version: 1.2.0
+version: 1.3.0
 author: Matt Shepard
 license: MIT
 platforms: [linux]
@@ -82,8 +82,21 @@ body inline in the shell command.
 `EMAIL_ADDRESS`, `EMAIL_PASSWORD` and `EMAIL_SMTP_HOST` are stripped from every
 sandboxed command by the framework, deliberately. If you inspect your
 environment you will not find them. That is not a fault and not a blocker:
-`send_to.py` loads them itself when it runs. Use the tool. Do not write your own
-send code, which requires approval and will be refused.
+`send_to.py` reads them from the volume itself when it runs.
+
+**Do not take that on faith. Check it.** If you doubt the tool can send, run:
+
+    python3 /data/.hermes/tools/send_to.py --check
+
+It reports which settings resolved and where each came from, prints no values,
+and needs no approval. `READY: yes` means the send will work. Use this instead
+of inspecting the environment or the `.env` file yourself.
+
+**Run the send command directly. Never wrap it.** No `bash -c`, no `sh -c`, no
+`set -a`, no `source /data/.hermes/.env`. A wrapper turns the command into a
+compound shell command, which trips the approval gate and stops the send. The
+wrapper is also pointless: the script already loads what it needs. If you find
+yourself about to source the environment file, run `--check` instead.
 
 **Body files must sit under `/tmp`.** The script refuses a body file anywhere
 else.
