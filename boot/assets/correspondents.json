@@ -1,0 +1,13 @@
+{
+  "_comment": "Third parties Bailey may ASK questions of. NOT principals. Being listed here grants NO inbound authority: these addresses stay off EMAIL_ALLOWED_USERS, so a message from them is never dispatched to the agent. Listing here does two things only: (1) principals are force-copied and Reply-To is set on any send to this address, (2) if they reply without a principal on the thread, the principals get a notice instead of the message being dropped silently. Fail-closed: a malformed or missing file means no correspondents.",
+  "correspondents": [
+    {
+      "address": "eric@crtmanage.com",
+      "name": "Eric Ross",
+      "organization": "CRT Management",
+      "role": "Owner / Employing Broker",
+      "may_be_asked": "What a line item or charge on a CRT owner statement is for, and which property or unit a charge belongs to.",
+      "may_not_be": "Told what will be entered in the books, asked to approve anything, or given any instruction. Matt and Amy decide; Bailey asks."
+    }
+  ]
+}

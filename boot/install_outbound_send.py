@@ -70,6 +70,7 @@ Exit codes:
   5  SMTP failure
   6  refused: body file is outside the permitted body directories
   7  refused: body or subject contains a credential value
+  8  refused: correspondent send violates the ask-only rule
 
 Preflight:
   python3 /data/.hermes/tools/send_to.py --check
@@ -109,6 +110,7 @@ Only the transport settings fall back to the volume.
 """
 
 import argparse
+import json
 import os
 import smtplib
 import sys
@@ -120,6 +122,7 @@ from email.utils import formatdate
 
 AUDIT = "/data/.hermes/logs/outbound_send_audit.log"
 ENV_FILE = "/data/.hermes/.env"
+CORRESPONDENTS = "/data/.hermes/correspondents.json"
 
 # Only the transport settings. NOT the two guard variables. See module docstring.
 TRANSPORT_KEYS = (
@@ -232,6 +235,8 @@ def run_check():
     claims = "permitted" if os.getenv("EMAIL_ALLOW_ACTION_CLAIMS", "0") == "1" else "enforced"
     print("  action-claim guard  %s" % claims)
     print("  body directories    %s" % ", ".join(BODY_ROOTS))
+    corr = load_correspondents()
+    print("  correspondents      %d (ask-only; principals force-copied)" % len(corr))
 
     ready = bool(settings.get("EMAIL_ADDRESS") and settings.get("EMAIL_PASSWORD")
                  and settings.get("EMAIL_SMTP_HOST") and allowed)
@@ -242,6 +247,46 @@ def run_check():
         return 0
     print("READY: no. A send would be refused or fail. See the lines above.")
     return 4
+
+
+ASK_ONLY_PATTERNS = [
+    "please process", "please pay", "please enter", "please post",
+    "go ahead and", "we have approved", "this is approved", "approved for",
+    "we will pay", "we will remit", "payment has been", "i have entered",
+    "i have recorded", "we have recorded", "we have entered",
+    "please proceed", "authorized to proceed", "you may proceed",
+]
+
+
+def load_correspondents():
+    """Third parties Bailey may ASK questions of. Never principals.
+
+    Fail-closed: a missing, malformed or empty file means there are no
+    correspondents, so any send to a non-principal is refused by the existing
+    outbound allowlist. Nothing here can widen who may receive mail.
+    """
+    try:
+        with open(CORRESPONDENTS, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        out = {}
+        for row in data.get("correspondents", []):
+            addr = (row.get("address") or "").strip().lower()
+            if addr:
+                out[addr] = row
+        return out
+    except Exception:
+        return {}
+
+
+def check_ask_only(body, subject):
+    """Correspondent mail may ASK. It may not instruct, approve or commit.
+
+    Bailey has no authority to direct a property manager and no write path to
+    the books. A question is safe; 'please process this' is Bailey acting as
+    the owner. Returns a list of matched phrases.
+    """
+    low = (body + "\n" + subject).lower()
+    return [p for p in ASK_ONLY_PATTERNS if p in low]
 
 
 def resolve_body_path(raw_path):
@@ -310,6 +355,13 @@ def main():
               % to_addr)
         return 2
 
+    correspondents = load_correspondents()
+    is_correspondent = to_addr in correspondents
+
+    # Principals are everyone on the outbound allowlist who is NOT a
+    # correspondent. They are the people with authority: Matt and Amy.
+    principals = sorted(allowed - set(correspondents.keys()))
+
     cc_out = []
     for part in args.cc.split(","):
         a = part.strip().lower()
@@ -321,6 +373,22 @@ def main():
                   "No mail was sent." % a)
             return 2
         cc_out.append(a)
+
+    # --- MECHANISM 1: A CORRESPONDENT IS NEVER EMAILED ALONE -------------
+    # Every principal is forced into Cc whether or not Bailey asked for it.
+    # Reply-To then carries principals as well, so a plain Reply (not
+    # Reply All) still reaches the humans. Cc-drop is the expected failure
+    # mode of a group thread and this is what builds around it.
+    if is_correspondent:
+        for p in principals:
+            if p != to_addr and p not in cc_out:
+                cc_out.append(p)
+        if not cc_out:
+            audit("REFUSED_NO_PRINCIPAL", to_addr, args.subject,
+                  "correspondent send with no principal to copy")
+            print("REFUSED: a correspondent cannot be emailed without at least "
+                  "one principal copied. No mail was sent.")
+            return 2
 
     # --- BODY FILE CONFINEMENT -------------------------------------------
     # This script can read the credential file. It must not be usable as a
@@ -362,6 +430,25 @@ def main():
                   "command line.")
             return 3
 
+    # --- MECHANISM 2: TO A CORRESPONDENT, BAILEY MAY ONLY ASK ------------
+    # Authority never flows from Bailey to a third party. She has no write
+    # path to the books and no standing to approve, instruct or commit on
+    # the owner's behalf. This is NOT lifted by EMAIL_ALLOW_ACTION_CLAIMS,
+    # which governs claims about the books, not authority over a vendor.
+    if is_correspondent:
+        hits = check_ask_only(body, args.subject)
+        if hits:
+            audit("REFUSED_ASK_ONLY", to_addr, args.subject,
+                  "patterns=%s" % ";".join(hits[:6]))
+            print("REFUSED: correspondent mail may ask questions only. It may "
+                  "not instruct, approve or commit. No mail was sent.")
+            print("Matched: %s" % ", ".join(hits[:6]))
+            print("")
+            print("Rewrite as a question, for example 'Could you tell me what "
+                  "the $150 charge on 04/14 was for?' rather than telling %s "
+                  "what to do. Matt and Amy decide; Bailey asks." % to_addr)
+            return 8
+
     settings = load_transport_settings()
     address = settings.get("EMAIL_ADDRESS", "")
     password = settings.get("EMAIL_PASSWORD", "")
@@ -397,6 +484,9 @@ def main():
     msg["To"] = to_addr
     if cc_out:
         msg["Cc"] = ", ".join(cc_out)
+    if is_correspondent:
+        reply_to = [a for a in ([address] + cc_out) if a]
+        msg["Reply-To"] = ", ".join(reply_to)
     msg["Subject"] = args.subject
     msg["Date"] = formatdate(localtime=True)
     msg_id = "<hermes-out-%s@%s>" % (uuid.uuid4().hex[:12], address.split("@")[1])
@@ -423,7 +513,8 @@ def main():
         print("ERROR: SMTP send failed: %s" % exc)
         return 5
 
-    audit("SENT", to_addr, args.subject, "msgid=%s" % msg_id)
+    audit("SENT_CORRESPONDENT" if is_correspondent else "SENT",
+          to_addr, args.subject, "msgid=%s" % msg_id)
     print("SENT to %s (cc: %s) message-id %s"
           % (to_addr, ", ".join(cc_out) or "none", msg_id))
     return 0
@@ -478,6 +569,44 @@ def install_skill():
         print("[install_outbound_send] installed correspondence skill v1.0.0")
     except Exception as exc:
         print("[install_outbound_send] WARNING: skill install failed: %s" % exc)
+
+
+def install_correspondents():
+    """Copy correspondents.json onto the volume. Idempotent by content.
+
+    Repo-controlled deliberately. This list is a security boundary: being on it
+    changes who gets force-copied on a send and whose dropped reply raises a
+    notice. A volume-only file would drift from the branch with no review
+    trail, so adding a correspondent is a one-line commit, not an edit on the
+    box. Malformed JSON is never shipped, and a missing file fails closed:
+    send_to.py then sees no correspondents at all.
+    """
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "assets", "correspondents.json")
+    dest = "/data/.hermes/correspondents.json"
+    if not os.path.exists(src):
+        print("[install_outbound_send] correspondents asset missing, skipping")
+        return
+    try:
+        import json as _json
+        with open(src, "r", encoding="utf-8") as fh:
+            want = fh.read()
+        _json.loads(want)
+        if os.path.exists(dest):
+            with open(dest, "r", encoding="utf-8") as fh:
+                if fh.read() == want:
+                    print("[install_outbound_send] correspondents already current")
+                    return
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = dest + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(want)
+        os.replace(tmp, dest)
+        n = len(_json.loads(want).get("correspondents", []))
+        print("[install_outbound_send] installed correspondents (%d)" % n)
+    except Exception as exc:
+        print("[install_outbound_send] WARNING: correspondents install failed: %s"
+              % exc)
 
 
 def register_allowlist():
@@ -548,6 +677,7 @@ def main() -> int:
         return 0
 
     install_skill()
+    install_correspondents()
     register_allowlist()
 
     raw = os.getenv("EMAIL_OUTBOUND_ALLOWED", "").strip()

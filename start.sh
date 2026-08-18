@@ -378,6 +378,16 @@ if [ "${HERMES_SKIP_OUTBOUND_SEND:-0}" != "1" ]; then
   python /app/boot/install_outbound_send.py || true
 fi
 
+# patch_email_correspondent_notice.py makes a dropped correspondent
+# reply LOUD. Eric Ross at CRT stays off EMAIL_ALLOWED_USERS, so his
+# mail is never dispatched to the agent and never becomes an
+# instruction. But if he replies without Matt or Amy copied, the
+# principals get a notice instead of the answer vanishing.
+# Declines rather than breaks if the upstream anchor moves.
+if [ "${HERMES_SKIP_CORRESPONDENT_NOTICE:-0}" != "1" ]; then
+  python /app/boot/patch_email_correspondent_notice.py || true
+fi
+
 # ── Gate agent self-writes behind approval ─────────────────────────────────
 # Root cause (found 2026-07-29 on beths-bot): the framework's background
 # self-improvement review (agent/background_review.py) rewrote the live
