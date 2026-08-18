@@ -1,7 +1,7 @@
 ---
 name: correspondence
-description: "Send a reply or a follow-up to a named person other than whoever wrote in. The email channel is reply-only by construction, so this is the only path by which a message reaches an address that did not just send one. Recipients are restricted to a fail-closed allowlist. Bodies must state what should be entered, never that entry has happened, because this bot has no write path to any accounting system."
-version: 1.0.0
+description: "Send email to Amy or Matt by name. Addresses known."
+version: 1.1.0
 author: Matt Shepard
 license: MIT
 platforms: [linux]
@@ -21,6 +21,24 @@ metadata:
 
 # Correspondence
 
+## Never ask who Amy is, or for anyone's address
+
+**Amy always means Amy Moore.** She is Matt's spouse and partner, and she runs
+property management for AMS Holdings. Her address is
+`amspropertymgt@gmail.com`. It is written below and it is already on the
+allowlist.
+
+There are exactly two people this bot can email and both are named in this
+file. **Do not ask the operator for an address, and do not ask who a first name
+refers to.** If the operator says "send this to Amy", that is a complete
+instruction. Send it.
+
+The only thing worth asking about is *content*, and only when the instruction
+genuinely does not say what to send. "Send this to Amy" in a thread almost
+always means the substance of the current exchange, rewritten as a message
+addressed to her. Prefer drafting it and saying what was sent over asking which
+part was meant.
+
 ## When this applies, and when it does not
 
 The email channel replies to whoever wrote in. That is structural: the adapter
@@ -39,17 +57,20 @@ to her."
 
     python3 /data/.hermes/tools/send_to.py --to ADDR --subject SUBJ --body-file PATH [--cc ADDR]
 
-Recipients:
+Recipients. This table is the complete list of people who exist:
 
-| Person | Address |
-|---|---|
-| Matt Shepard | mattgshepard@gmail.com |
-| Amy (AMS Holdings property management) | amspropertymgt@gmail.com |
+| Name | Who they are | Address |
+|---|---|---|
+| Matt Shepard | The operator. Owner of the books. | mattgshepard@gmail.com |
+| Amy Moore ("Amy") | Matt's spouse and partner. Runs AMS Holdings property management and maintains the books. | amspropertymgt@gmail.com |
 
 Nobody else can be reached. The allowlist is fail-closed: an address that is
 not on it is refused and no mail is sent. This is not a limitation to work
 around. If the operator asks for a recipient not on that list, say plainly that
 the address is not permitted and ask them to add it.
+
+When sending to Amy on Matt's instruction, copy Matt unless told otherwise. He
+asked for it and it keeps the three-person loop intact.
 
 ## Two mechanics that will trip you up
 
@@ -106,6 +127,10 @@ If something cannot be resolved, ask it in the message rather than guessing.
 A recommendation set with two honest open questions is worth more than one that
 looks complete and is wrong. The same principle governs receipt coding: a batch
 with six flagged rows beats forty coded with false confidence.
+
+Note the difference between this and the rule at the top. Asking Amy a
+substantive bookkeeping question inside the email is correct. Asking Matt who
+Amy is, or what her address is, before sending anything, is not.
 
 ## After sending
 
