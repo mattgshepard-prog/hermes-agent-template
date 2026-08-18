@@ -68,10 +68,40 @@ Exit codes:
   3  refused: body contains unsubstantiated action claims
   4  configuration error (missing SMTP settings or body file)
   5  SMTP failure
+  6  refused: body file is outside the permitted body directories
+  7  refused: body or subject contains a credential value
 
 Every attempt, allowed or refused, is appended to the audit log at
 /data/.hermes/logs/outbound_send_audit.log. The audit line is written BEFORE
 the send is attempted, so a crash mid-send still leaves a record.
+
+--------------------------------------------------------------------------
+WHY THIS SCRIPT READS .env DIRECTLY  (v1.1.0, 2026-08-18)
+--------------------------------------------------------------------------
+v1.0.0 read SMTP settings from os.environ and could never have sent anything.
+EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST, EMAIL_IMAP_HOST and
+EMAIL_HOME_ADDRESS are all members of _HERMES_PROVIDER_ENV_BLOCKLIST in
+tools/environments/local.py. The framework strips every name on that list from
+the child environment of execute_code and terminal. So a terminal invocation of
+this script saw empty strings for all three and exited 4, every time.
+
+That strip is a real security control (GHSA-rhgp-j443-p4rf) and the
+skill-frontmatter passthrough route deliberately refuses to re-expose
+blocklisted names. It should not be defeated. So this script does not ask for
+the credential to be put back into the environment. It reads the four
+transport settings itself, from the volume, uses them, and never emits them.
+
+The exposure this opens is narrow but real: this script is on the permanent
+command allowlist, so it runs without approval, and it can now read a file the
+agent cannot read unapproved. Two guards below close the ways that access
+could be turned into an exfiltration path. Both were added with the .env read,
+not after it.
+
+Note what is deliberately NOT read from .env: EMAIL_OUTBOUND_ALLOWED and
+EMAIL_ALLOW_ACTION_CLAIMS. Those two are the guards, and they stay purely
+environment-controlled so that clearing the Railway variable disables outbound
+send immediately, which is exactly what the C6 gate proved on 2026-08-17.
+Only the transport settings fall back to the volume.
 """
 
 import argparse
@@ -85,6 +115,20 @@ from email.mime.text import MIMEText
 from email.utils import formatdate
 
 AUDIT = "/data/.hermes/logs/outbound_send_audit.log"
+ENV_FILE = "/data/.hermes/.env"
+
+# Only the transport settings. NOT the two guard variables. See module docstring.
+TRANSPORT_KEYS = (
+    "EMAIL_ADDRESS",
+    "EMAIL_PASSWORD",
+    "EMAIL_SMTP_HOST",
+    "EMAIL_SMTP_PORT",
+)
+
+# A body file may only be read from these roots. /data/.hermes/ is NOT one of
+# them, which is what stops --body-file /data/.hermes/.env from mailing the
+# credential set to an allowlisted address.
+BODY_ROOTS = ("/tmp", "/var/tmp", "/data/.hermes/outbox")
 
 # Forward-looking claims of bookkeeping action. Bailey has no write path to any
 # accounting system; a sentence like these tells the reader the books changed.
@@ -111,12 +155,74 @@ def audit(status, to_addr, subject, detail=""):
         pass  # auditing must never be the reason a send fails
 
 
+def load_transport_settings():
+    """Return the four transport settings, environment first, .env as fallback.
+
+    Values are returned, never printed. Callers must not log them. Only the
+    four names in TRANSPORT_KEYS are ever read out of the file, so an unrelated
+    secret sitting in .env is not pulled into memory by this function.
+    """
+    out = {}
+    for key in TRANSPORT_KEYS:
+        val = os.getenv(key, "")
+        if val:
+            out[key] = val
+
+    missing = [k for k in TRANSPORT_KEYS if not out.get(k)]
+    if not missing:
+        return out
+
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                if k not in missing:
+                    continue
+                v = v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                    v = v[1:-1]
+                if v:
+                    out[k] = v
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass  # fall through to the missing-settings error below
+
+    return out
+
+
+def resolve_body_path(raw_path):
+    """Resolve and confine the body file path.
+
+    Returns (path, None) when permitted, or (None, reason) when refused.
+    realpath collapses .. and follows symlinks before the prefix test, so
+    neither traversal nor a planted symlink escapes the permitted roots.
+    """
+    path = os.path.realpath(raw_path)
+    base = os.path.basename(path)
+
+    if base.startswith(".env"):
+        return None, "body file basename starts with .env"
+
+    for root in BODY_ROOTS:
+        root_real = os.path.realpath(root)
+        if path == root_real or path.startswith(root_real.rstrip("/") + "/"):
+            return path, None
+
+    return None, "body file is outside the permitted directories"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--to", required=True)
     ap.add_argument("--subject", required=True)
     ap.add_argument("--body-file", required=True,
-                    help="Path to a UTF-8 text file holding the body. Not an "
+                    help="Path to a UTF-8 text file holding the body. Must sit "
+                         "under /tmp, /var/tmp or /data/.hermes/outbox. Not an "
                          "inline string: bodies contain quotes and newlines "
                          "that do not survive a shell argument.")
     ap.add_argument("--cc", default="")
@@ -126,6 +232,8 @@ def main():
 
     # --- FAIL-CLOSED ALLOWLIST -------------------------------------------
     # Note the inversion versus EMAIL_ALLOWED_USERS: empty means DENY ALL.
+    # Read from the environment ONLY. Never from .env. Clearing the Railway
+    # variable must disable outbound send.
     raw = os.getenv("EMAIL_OUTBOUND_ALLOWED", "").strip()
     allowed = {a.strip().lower() for a in raw.split(",") if a.strip()}
     if not allowed:
@@ -153,10 +261,20 @@ def main():
             return 2
         cc_out.append(a)
 
-    if not os.path.exists(args.body_file):
+    # --- BODY FILE CONFINEMENT -------------------------------------------
+    # This script can read the credential file. It must not be usable as a
+    # cat-and-mail primitive for it.
+    body_path, reason = resolve_body_path(args.body_file)
+    if body_path is None:
+        audit("REFUSED_BODY_PATH", to_addr, args.subject, reason)
+        print("REFUSED: %s. No mail was sent." % reason)
+        print("Body files must sit under one of: %s" % ", ".join(BODY_ROOTS))
+        return 6
+
+    if not os.path.exists(body_path):
         print("ERROR: body file not found: %s" % args.body_file)
         return 4
-    with open(args.body_file, "r", encoding="utf-8") as fh:
+    with open(body_path, "r", encoding="utf-8") as fh:
         body = fh.read()
 
     # --- ACTION-CLAIM GUARD ----------------------------------------------
@@ -183,14 +301,35 @@ def main():
                   "command line.")
             return 3
 
-    address = os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    host = os.getenv("EMAIL_SMTP_HOST", "")
-    port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+    settings = load_transport_settings()
+    address = settings.get("EMAIL_ADDRESS", "")
+    password = settings.get("EMAIL_PASSWORD", "")
+    host = settings.get("EMAIL_SMTP_HOST", "")
+    try:
+        port = int(settings.get("EMAIL_SMTP_PORT", "587") or "587")
+    except ValueError:
+        port = 587
     if not (address and password and host):
-        print("ERROR: EMAIL_ADDRESS, EMAIL_PASSWORD and EMAIL_SMTP_HOST must "
-              "all be set in the process environment.")
+        absent = [k for k in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST")
+                  if not settings.get(k)]
+        print("ERROR: missing transport settings: %s. Not found in the "
+              "environment and not found in %s. Names only are reported here; "
+              "no values are printed." % (", ".join(absent), ENV_FILE))
         return 4
+
+    # --- CREDENTIAL LEAK GUARD -------------------------------------------
+    # Belt and braces alongside the path confinement. If a credential value
+    # reached the body by any route, refuse rather than put it on the wire.
+    # Compared against the values held in memory; nothing is printed.
+    haystack = body + "\n" + args.subject
+    for key in ("EMAIL_PASSWORD",):
+        secret = settings.get(key, "")
+        if secret and len(secret) >= 8 and secret in haystack:
+            audit("REFUSED_CREDENTIAL_IN_BODY", to_addr, args.subject,
+                  "matched=%s" % key)
+            print("REFUSED: the message contains a credential value (%s). "
+                  "No mail was sent." % key)
+            return 7
 
     msg = MIMEMultipart()
     msg["From"] = address

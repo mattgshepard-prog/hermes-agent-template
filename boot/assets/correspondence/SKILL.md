@@ -1,7 +1,7 @@
 ---
 name: correspondence
 description: "Send email to Amy or Matt by name. Addresses known."
-version: 1.1.0
+version: 1.2.0
 author: Matt Shepard
 license: MIT
 platforms: [linux]
@@ -77,6 +77,16 @@ asked for it and it keeps the three-person loop intact.
 **Write the body to a file first, then send.** Use the file-writing tool to
 create the body at a path like `/tmp/reply_amy.txt`. Do not try to build the
 body inline in the shell command.
+
+**Your session will not contain the email settings. This is expected.**
+`EMAIL_ADDRESS`, `EMAIL_PASSWORD` and `EMAIL_SMTP_HOST` are stripped from every
+sandboxed command by the framework, deliberately. If you inspect your
+environment you will not find them. That is not a fault and not a blocker:
+`send_to.py` loads them itself when it runs. Use the tool. Do not write your own
+send code, which requires approval and will be refused.
+
+**Body files must sit under `/tmp`.** The script refuses a body file anywhere
+else.
 
 **Run the send as one clean command with no shell operators.** No `>`, no `|`,
 no `&&`, no `;`, no backticks. A command containing any of those is treated as
