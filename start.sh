@@ -388,6 +388,33 @@ if [ "${HERMES_SKIP_CORRESPONDENT_NOTICE:-0}" != "1" ]; then
   python /app/boot/patch_email_correspondent_notice.py || true
 fi
 
+# ── Owner packets bypass the agent (bailey-owner-packet-dispatch-v1) ──────────
+# Four consecutive CRT owner packets (April, May, June, and the June retry on
+# 2026-08-24) were coded by hand into /tmp/receipt_rows.json instead of through
+# run_owner_packet.py. Twice the model compacted context mid-packet and carried
+# on from a lossy self-summary. SKILL.md said the right thing every time.
+#
+# An allowlist alone does not fix this: a blocked command and an uninvoked one
+# both produce nothing. So the packet never reaches the model. This patcher
+# inserts a hook into gateway/platforms/email.py `_dispatch_message`, right
+# before `await self.handle_message(event)`, which is after the
+# EMAIL_ALLOWED_USERS guard and after thread context is set, and before any
+# agent turn exists.
+#
+# The hook only loads the volume module
+# /data/.hermes/skills/bookkeeping/receipt-coding/scripts/owner_packet_dispatch.py
+# and calls it. All behaviour lives on the volume, so iterating on the
+# dispatcher never touches the image again. A message it does not claim falls
+# through to the agent exactly as before.
+#
+# HERMES_SKIP_OWNER_PACKET_DISPATCH=1 opts out, and is read at BOTH layers: the
+# patcher skips wiring and the hook itself no-ops.
+if [ "${HERMES_SKIP_OWNER_PACKET_DISPATCH:-0}" != "1" ]; then
+  python /app/boot/patch_email_owner_packet.py || true
+else
+  echo "[start.sh] Owner-packet dispatch patch skipped (HERMES_SKIP_OWNER_PACKET_DISPATCH=1)."
+fi
+
 # ── Gate agent self-writes behind approval ─────────────────────────────────
 # Root cause (found 2026-07-29 on beths-bot): the framework's background
 # self-improvement review (agent/background_review.py) rewrote the live
