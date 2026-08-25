@@ -38,11 +38,11 @@ HERMES_SKIP_OWNER_PACKET_DISPATCH=1 opts out.
 import os
 import sys
 
-MARKER = "bailey-owner-packet-dispatch-v1"
+MARKER = "bailey-doc-dispatch-v2"
 
 ANCHOR = '        logger.info("[Email] New message from %s: %s", sender_addr, subject)'
 
-BLOCK = '''        # --- bailey-owner-packet-dispatch-v1 ---
+BLOCK = '''        # --- bailey-doc-dispatch-v2 ---
         # A CRT owner packet is handled by the toolchain, not by the agent.
         # Inserted at boot by /app/boot/patch_email_owner_packet.py.
         if os.getenv("HERMES_SKIP_OWNER_PACKET_DISPATCH", "0") != "1":
@@ -68,7 +68,35 @@ BLOCK = '''        # --- bailey-owner-packet-dispatch-v1 ---
                 # Loading failed, so nothing was claimed. Fall through.
                 logger.error("[Email] owner-packet dispatch unavailable, "
                              "falling through to the agent: %s", _opd_exc)
-        # --- end bailey-owner-packet-dispatch-v1 ---
+        # A vendor receipt is handled by the toolchain, not by the agent.
+        # Runs AFTER the packet dispatcher: a CRT packet must be claimed
+        # there first. Property and Activity Type may come only from what
+        # the sender wrote, so the message body is passed through.
+        if os.getenv("HERMES_SKIP_RECEIPT_DISPATCH", "0") != "1":
+            try:
+                import importlib.util as _rilu
+                _rd_path = os.getenv(
+                    "RECEIPT_DISPATCH",
+                    "/data/.hermes/skills/bookkeeping/receipt-coding"
+                    "/scripts/receipt_dispatch.py")
+                if os.path.isfile(_rd_path):
+                    _rspec = _rilu.spec_from_file_location(
+                        "receipt_dispatch", _rd_path)
+                    _rd = _rilu.module_from_spec(_rspec)
+                    _rspec.loader.exec_module(_rd)
+                    if await _rd.try_dispatch(
+                            attachments=attachments,
+                            sender_addr=sender_addr,
+                            subject=subject,
+                            adapter=self,
+                            logger=logger,
+                            body=body):
+                        return
+            except Exception as _rd_exc:
+                # Loading failed, so nothing was claimed. Fall through.
+                logger.error("[Email] receipt dispatch unavailable, falling "
+                             "through to the agent: %s", _rd_exc)
+        # --- end bailey-doc-dispatch-v2 ---
 '''
 
 
