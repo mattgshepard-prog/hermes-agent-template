@@ -56,6 +56,7 @@ XAI_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION \
 COPILOT_GITHUB_TOKEN GMI_API_KEY OPENCODE_ZEN_API_KEY OPENCODE_GO_API_KEY \
 KILOCODE_API_KEY OLLAMA_API_KEY AZURE_FOUNDRY_API_KEY AZURE_FOUNDRY_BASE_URL \
 CUSTOM_PROVIDER_API_KEY CUSTOM_PROVIDER_BASE_URL CUSTOM_PROVIDER_NAME \
+LLM_PROVIDER LLM_BASE_URL \
 PARALLEL_API_KEY FIRECRAWL_API_KEY TAVILY_API_KEY FAL_KEY BROWSERBASE_API_KEY \
 BROWSERBASE_PROJECT_ID GITHUB_TOKEN VOICE_TOOLS_OPENAI_KEY HONCHO_API_KEY HONCHO_WORKSPACE \
 TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
@@ -193,6 +194,59 @@ PYEOF
   fi
 else
   echo "[start.sh] Honcho wire skipped (disabled, no HONCHO_API_KEY, or no config.yaml yet)."
+fi
+
+# ── Wire the LLM provider (non-destructive) ─────────────────────────────────
+# Client bots pick ONE LLM provider at provision time. The fork's committed
+# config.yaml defaults to model.provider: auto + base_url: https://api.anthropic.com,
+# so an Anthropic-direct bot needs no config change. Every OTHER provider
+# (openai, openrouter, groq, a custom OpenAI-compatible endpoint, ...) needs
+# model.provider and model.base_url set to match the key that was seeded, or
+# hermes fires the wrong-provider key at the Anthropic URL and 401s.
+#
+# This wires config.yaml from three Railway variables the provisioner sets:
+#   LLM_PROVIDER  -> model.provider   (e.g. anthropic, openai, openrouter, custom)
+#   LLM_MODEL     -> model.default    (already seeded to .env above; set here too)
+#   LLM_BASE_URL  -> model.base_url   (empty string allowed, e.g. Anthropic-direct)
+#
+# Guards, mirroring the Honcho-wire block above:
+# - Only fires when LLM_PROVIDER is set. Garry (and any dual-provider research
+#   rig) sets NO LLM_PROVIDER, so this block never touches it -- provider stays
+#   'auto'. This is the non-regression guarantee.
+# - HERMES_SKIP_LLM_WIRE=1 opts out entirely.
+# - config.yaml is backed up once before the first wire.
+# - Fully failure-tolerant: never blocks gateway boot.
+# - base_url is set with `hermes config set` reading the raw env value, so an
+#   intentionally empty LLM_BASE_URL clears it (Anthropic-direct via auto).
+if [ "${HERMES_SKIP_LLM_WIRE:-0}" != "1" ] && [ -n "${LLM_PROVIDER:-}" ] && [ -f /data/.hermes/config.yaml ]; then
+  if [ ! -f /data/.hermes/config.yaml.bak-pre-llm-wire ]; then
+    cp /data/.hermes/config.yaml /data/.hermes/config.yaml.bak-pre-llm-wire 2>/dev/null || true
+  fi
+  if hermes config set model.provider "${LLM_PROVIDER}" >/dev/null 2>&1; then
+    echo "[start.sh] Wired model.provider=${LLM_PROVIDER} in config.yaml (LLM_PROVIDER present)."
+  else
+    echo "[start.sh] WARNING: hermes config set model.provider ${LLM_PROVIDER} failed; continuing boot."
+  fi
+  if [ -n "${LLM_MODEL:-}" ]; then
+    if hermes config set model.default "${LLM_MODEL}" >/dev/null 2>&1; then
+      echo "[start.sh] Wired model.default=${LLM_MODEL} in config.yaml."
+    else
+      echo "[start.sh] WARNING: hermes config set model.default ${LLM_MODEL} failed; continuing boot."
+    fi
+  fi
+  # LLM_BASE_URL: set whenever the variable is DEFINED (even if empty), so an
+  # Anthropic-direct build can explicitly clear base_url. Use parameter-set
+  # detection (${LLM_BASE_URL+x}) rather than non-empty (-n), because "" is a
+  # meaningful value here.
+  if [ -n "${LLM_BASE_URL+x}" ]; then
+    if hermes config set model.base_url "${LLM_BASE_URL}" >/dev/null 2>&1; then
+      echo "[start.sh] Wired model.base_url in config.yaml (LLM_BASE_URL defined)."
+    else
+      echo "[start.sh] WARNING: hermes config set model.base_url failed; continuing boot."
+    fi
+  fi
+else
+  echo "[start.sh] LLM provider wire skipped (disabled, no LLM_PROVIDER, or no config.yaml yet)."
 fi
 
 # ── Seed Honcho peer pin (non-destructive) ──────────────────────────────────
