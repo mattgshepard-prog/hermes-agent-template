@@ -224,7 +224,19 @@ def write_config_yaml(data: dict[str, str]) -> None:
     # API key is set, the user likely configured an OAuth provider (xai-oauth,
     # qwen-oauth, etc.) via the dashboard's model picker — preserve that value
     # so a container restart doesn't revert it to "auto" and break their session.
-    if any(data.get(k) for k in PROVIDER_KEYS):
+    # An explicit LLM_PROVIDER wins. Before 2026-08-30 this block forced
+    # provider back to "auto" on every boot whenever any provider key was
+    # present, which silently undid the start.sh LLM-wire block: Hazel
+    # logged "Wired model.provider=anthropic" and then read "auto", and
+    # Garry's 2026-07-21 anthropic pin reverted on the next boot.
+    #
+    # "auto" is still the fallback when no explicit provider is set, so an
+    # OAuth provider configured via the dashboard model picker (xai-oauth,
+    # qwen-oauth, ...) is preserved exactly as before.
+    explicit_provider = (data.get("LLM_PROVIDER") or "").strip()
+    if explicit_provider:
+        merged_model["provider"] = explicit_provider
+    elif any(data.get(k) for k in PROVIDER_KEYS):
         merged_model["provider"] = "auto"
     merged["model"] = merged_model
 
