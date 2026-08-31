@@ -14,3 +14,9 @@ websockets>=12.0
 # the point of the artifact in front of a bookkeeper. Confirmed absent from the
 # image on 2026-07-28: hermes-agent's extras do not pull it in.
 openpyxl>=3.1.0
+
+# cryptography provides Fernet (AES-128-CBC + HMAC-SHA256), used by
+# vault.py to decrypt portal credentials pulled from Supabase. The key
+# lives only in the Railway variable BAILEY_VAULT_KEY; the database holds
+# ciphertext. Confirmed absent from the image on 2026-08-31.
+cryptography>=43.0.0
