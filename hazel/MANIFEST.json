@@ -1,0 +1,188 @@
+{
+  "packet": "hazel",
+  "contains_credentials": false,
+  "files": [
+    {
+      "path": "SKILL.md",
+      "bytes": 8780,
+      "sha256": "37383597e264522ce812f6396c0bbdfab3ae3dcc7577de141e4c4d21dae4fa05"
+    },
+    {
+      "path": "alerts.py",
+      "bytes": 10169,
+      "sha256": "5ebf518337a3d08b1cb3da67e2a571c26b0d16ce8ec9e92d300f18af4fd91137"
+    },
+    {
+      "path": "authorize_kroger.py",
+      "bytes": 7726,
+      "sha256": "6df15fedca54c246f47d9d8fa68a1a90fcab8974323291c16e80cd25e5cddea2"
+    },
+    {
+      "path": "baseline_inventory_2026-08-09.md",
+      "bytes": 3889,
+      "sha256": "5ad509f503034631221ffc96b0c9efc8a9df6f99e8291906188a318fe6c978c5"
+    },
+    {
+      "path": "cart.py",
+      "bytes": 13662,
+      "sha256": "4f7f2d5460813caa058a4ed2c8ac2d524a84fd23ffeab0191933b2d8c0a29e07"
+    },
+    {
+      "path": "cycle.py",
+      "bytes": 12454,
+      "sha256": "8a15bc6b5c482461c6d985cab5bdf2f077bbd26fc568851b780b9b57d4556ed2"
+    },
+    {
+      "path": "derive_gates.py",
+      "bytes": 5787,
+      "sha256": "af27cb29c13f4d95bdccb6b9cccc68f1e57c84c395cc7eb9bbd87dfcfef69e6e"
+    },
+    {
+      "path": "derive_gates2.py",
+      "bytes": 5984,
+      "sha256": "17871b7431ead6e089e26886f9e4a66762ab7a9bb59e8dad26ff4dfb535b804d"
+    },
+    {
+      "path": "fix_brand_locks.py",
+      "bytes": 6838,
+      "sha256": "2d1174260bd1eb2491f9b2fdd41a59345638e6cd8bb86dfd076b188e3c289d20"
+    },
+    {
+      "path": "hazel.py",
+      "bytes": 17840,
+      "sha256": "348d1d57d88b1d9068f1581115296eaae21fd6276657852a26241e6e7fb2ccd6"
+    },
+    {
+      "path": "household_defaults.py",
+      "bytes": 5031,
+      "sha256": "6205312fb746e765177cea57c9d6f3d05284f3c09c6f06d58fe7fb5c38282e05"
+    },
+    {
+      "path": "household_profile.md",
+      "bytes": 6007,
+      "sha256": "8323759efec388bf58685033f7442e410e7b3c9649dc99cc74dd07e46e14f9cb"
+    },
+    {
+      "path": "kroger_coverage.py",
+      "bytes": 5446,
+      "sha256": "cc13ccd7fc10b7a28a08b29fea1e61ac2099d8a95a2e379df89613c96e7f301c"
+    },
+    {
+      "path": "links.py",
+      "bytes": 3731,
+      "sha256": "5adb17479a6786869937f3efdfc2c76f6769996c61fff004711fe113a979d147"
+    },
+    {
+      "path": "location.json",
+      "bytes": 266,
+      "sha256": "31ecec442539cc6a82084241938e8f7333cb6ca7adf4c7998b3327d31e6db504"
+    },
+    {
+      "path": "menu.py",
+      "bytes": 5596,
+      "sha256": "f3cf12d4eea9c791046fb7ef504b0a002c8990cd9310c8c1b4836c33243f31ab"
+    },
+    {
+      "path": "normalize.py",
+      "bytes": 16164,
+      "sha256": "0d8270958732a4dce21c5795095b6d1b5c2fef160ed2c6d4ee0633a737b5341e"
+    },
+    {
+      "path": "optimizer.py",
+      "bytes": 7104,
+      "sha256": "ab3a338218a56891ea1bc2b92e5ecce5598f4b15f09744dad31cbbe51f48cff1"
+    },
+    {
+      "path": "pantry.py",
+      "bytes": 12349,
+      "sha256": "eef6ebc05c265ea46d35668bd0c9bc7769de09a5b5fafef2c13ea6d6c2440dc1"
+    },
+    {
+      "path": "patch_cycle_terms.py",
+      "bytes": 8914,
+      "sha256": "b9e68b5c211a1113a311bb95fd1e1902170d8b321e5e6aad3f3d7399f1ad7aa7"
+    },
+    {
+      "path": "prices.py",
+      "bytes": 12368,
+      "sha256": "691fb1fbe97880ceb6082c56edef561e7877670d7f55eaf6f1faf9bf3d7da95b"
+    },
+    {
+      "path": "reconciliation_2026-08-08.md",
+      "bytes": 3960,
+      "sha256": "45ee4a16490de0dc7be39845e6411d64ff6f973762165b21ff579a25048fa41d"
+    },
+    {
+      "path": "shopping_list.py",
+      "bytes": 2807,
+      "sha256": "d6a72b03c178365ddd20a7a9ed4f8be81225d87a1dd1bb7d818017454184cd19"
+    },
+    {
+      "path": "store.py",
+      "bytes": 21023,
+      "sha256": "bb0b5bd57014b6741e91ecd1b20044299ccd5976e16709730dfd874742a243c8"
+    },
+    {
+      "path": "subscribe_save.py",
+      "bytes": 7819,
+      "sha256": "99519e9d5ecb28b00ce3afad5f084dbc7255f220fb1f6cb504e5db4bf45eb44f"
+    },
+    {
+      "path": "subscribe_save_monitor.md",
+      "bytes": 3940,
+      "sha256": "4195bdb482cfa11f2f1ca94b6fa1b76b58f1bfca76efbf24afcf83d57fe2d5a4"
+    },
+    {
+      "path": "why_no_kroger.py",
+      "bytes": 5075,
+      "sha256": "aa67bac7043509a6cb5e39f829f4ee671ab353f09d2b8e00f6bc61f45f2782a0"
+    },
+    {
+      "path": "recipes/README.md",
+      "bytes": 1280,
+      "sha256": "f5f9b1db823b88d682271bcaca8928847b7c1ff4b6bf64644111dc10723720eb"
+    },
+    {
+      "path": "recipes/chicken-piccata.md",
+      "bytes": 4297,
+      "sha256": "fb6e1a4812dc43fd8655408f7d18adc54d1f90aca031414c2f44c63b65227960"
+    },
+    {
+      "path": "recipes/sheet-pan-greek-chicken.md",
+      "bytes": 3254,
+      "sha256": "6283fb5fc6231babcee50283a430caeff2e7924ce37e12ab8772d1115d674d22"
+    },
+    {
+      "path": "tests/test_alerts.py",
+      "bytes": 5797,
+      "sha256": "73707114dc493f238af204e83adf14a62a76a119f48905731c82594f79b083dc"
+    },
+    {
+      "path": "tests/test_cycle.py",
+      "bytes": 6182,
+      "sha256": "bedb63340a24550bf24c865bb6f4ade5f28e7aedde6835593380c8f14a3de59d"
+    },
+    {
+      "path": "tests/test_normalize.py",
+      "bytes": 5946,
+      "sha256": "38ecdd307695d1fca4568fa754dc9c9f84c03b5331e9480953a1adae76f39ee5"
+    },
+    {
+      "path": "tests/test_optimizer.py",
+      "bytes": 5006,
+      "sha256": "c0060f9916046e0a655b18f5af1ff05c0833f6a645bca3608495d4a155ce8e20"
+    },
+    {
+      "path": "tests/test_pantry.py",
+      "bytes": 5173,
+      "sha256": "f14e11e71d5b78a6994d993763516e7bec171afe51e22afe85f00d91c4cefe0d"
+    },
+    {
+      "path": "tests/test_store.py",
+      "bytes": 6047,
+      "sha256": "54b35239f8725accb4ec2e2f98dfacc6a1c24c8ac2eb6394cbac90700a0483cd"
+    }
+  ],
+  "file_count": 36,
+  "total_bytes": 263711
+}

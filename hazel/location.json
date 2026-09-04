@@ -1,0 +1,12 @@
+{
+  "zip": "80020",
+  "location_id": "62000086",
+  "name": "King Soopers - Broomfield on Sheridan",
+  "address": {
+    "addressLine1": "12167 Sheridan Blvd",
+    "city": "Broomfield",
+    "state": "CO",
+    "zipCode": "80020",
+    "county": "BROOMFIELD COUNTY"
+  }
+}
